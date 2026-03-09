@@ -20,6 +20,7 @@ jobs:
 
       # Dependency vulnerability scan
       - name: Dependency Review
+        if: github.event_name == 'pull_request'
         uses: actions/dependency-review-action@v4
 
       # Secret scanning

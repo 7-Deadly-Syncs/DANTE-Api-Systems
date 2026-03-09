@@ -10,7 +10,8 @@ on:
 permissions:
   contents: read
   security-events: write
-
+  actions: read
+  
 jobs:
   build:
     runs-on: ubuntu-latest

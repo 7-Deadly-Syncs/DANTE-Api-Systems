@@ -1,18 +1,17 @@
 name: CI
 
 on:
+  pull_request:
   push:
     branches: ["main"]
-  pull_request:
-    branches: ["main"]
-  workflow_dispatch:
 
 permissions:
   contents: read
   security-events: write
+  pull-requests: read
 
 jobs:
-  build:
+  security:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,29 +19,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Dependency Review
-        if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
-        with:
-          base-ref: ${{ github.event.pull_request.base.sha }}
-          head-ref: ${{ github.event.pull_request.head.sha }}
-
       - name: Gitleaks Secret Scan
         uses: gitleaks/gitleaks-action@v2
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+          
+      - name: Semgrep
+        uses: returntocorp/semgrep-action@v1
         with:
-          languages: go
+          config: "p/security-audit"
 
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
-
+      - name: Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          
       - name: Test script
         run: echo Dante is running!
 

@@ -1,0 +1,35 @@
+# Pulled sample from https://github.com/dockersamples/example-voting-app/blob/main/docker-compose.yml
+# Yet to implement:
+# - .env getter
+
+services:
+  listen:
+    build:
+      context: ./app
+      target: dev
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+    volumes:
+      - ./vote:/usr/local/app
+    ports:
+      - "8080:80"
+    networks:
+      - front-tier
+      - back-tier
+
+  redis:
+    image: redis:alpine
+    volumes:
+      - "./healthchecks:/healthchecks"
+    healthcheck:
+      test: /healthchecks/redis.sh
+      interval: 5s
+    networks:
+      - back-tier
+
+networks:
+  front-tier:
+  back-tier:

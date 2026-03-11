@@ -1,27 +1,25 @@
-FROM ubuntu:latest
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GOLANG_VERSION=1.22.5
-
-RUN apt-get update && apt-get install -y \
-  wget \
-  ca-certificates \
-  git \
-  build-essential \
-  & rm -rf /var/lib/apt/lists/*
-
-RUN wget https://go.dev/dl/go${GOLANG_VERSION}.linux-amd64.tar.gz \
-    && rm -rf /usr/local/go \
-    && tar -C /usr/local -xzf go${GOLANG_VERSION}.linux-amd64.tar.gz \
-    && rm go${GOLANG_VERSION}.linux-amd64.tar.gz
-
-ENV PATH="/usr/local/go/bin:${PATH}"
+# ---------- Builder ----------
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
+ENV CGO_ENABLED=0
+
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY . .
 
-RUN go mod download
-RUN go build -o app
+RUN go build -o backend ./cmd/dante
 
-CMD ["./app"]
+
+# ---------- Runtime ----------
+FROM alpine:3.19
+
+WORKDIR /app
+
+COPY --from=builder /app/backend /usr/local/bin/backend
+
+EXPOSE 8080
+
+CMD ["/usr/local/bin/backend"]

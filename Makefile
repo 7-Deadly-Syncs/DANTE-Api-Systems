@@ -18,3 +18,4 @@ run:
 
 down:
 	$(DC) down
+

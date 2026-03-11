@@ -2,7 +2,7 @@
 
 set -e
 
-test -f .env || cp ../.env.example ../.env
+test -f .env || cp .env.example .env
 
 grep -q '^REDIS_PASSWORD=' .env && \
 sed -i "s/^REDIS_PASSWORD=$/REDIS_PASSWORD=$(openssl rand -hex 16)/" .env

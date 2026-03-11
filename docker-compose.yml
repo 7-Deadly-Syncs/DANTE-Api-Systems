@@ -42,9 +42,26 @@ services:
     networks:
       - back-tier
 
+  db:
+    image: postges:15-alpine
+    environment:
+      POSTGRES_USER: "${DB_USER}"
+      POSTGRES_PASS: "${DB_PASS}"
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - "db-data:/var/lib/postgresql/data"
+      - "./healthchecks:/healthchecks"
+    healthcheck:
+      test: /healthcheck/postgres.sh
+      interval: "3s"
+    networks:
+      - back-tier
+
 networks:
   front-tier:
   back-tier:
 
 volumes:
   rabbitmq_data:
+  db_data:

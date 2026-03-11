@@ -22,7 +22,6 @@ go.work.sum
 
 # Environment Files
 *.env
-*.env.*
 
 # Binaries for programs and plugins
 *.exe

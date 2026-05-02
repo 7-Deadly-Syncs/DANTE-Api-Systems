@@ -11,6 +11,7 @@ RUN go mod download
 COPY . .
 
 RUN go build -o backend ./cmd/dante
+RUN go build -o migrate ./cmd/migrate
 
 
 # ---------- Runtime ----------
@@ -18,7 +19,11 @@ FROM alpine:3.19
 
 WORKDIR /app
 
+RUN apk add --no-cache ca-certificates wget
+
 COPY --from=builder /app/backend /usr/local/bin/backend
+COPY --from=builder /app/migrate /usr/local/bin/migrate
+COPY --from=builder /app/db /app/db
 
 EXPOSE 8080
 

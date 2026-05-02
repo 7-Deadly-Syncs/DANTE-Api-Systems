@@ -48,6 +48,7 @@ go.work.sum
 
 # env file
 .env
+.gocache/
 
 # Editor/IDE
 .vscode/

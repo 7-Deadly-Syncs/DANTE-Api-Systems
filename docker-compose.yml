@@ -1,10 +1,27 @@
-# Pulled sample from https://github.com/dockersamples/example-voting-app/blob/main/docker-compose.yml
-# Also notable https://github.com/docker/awesome-compose/tree/master/nginx-golang-postgres
-
 services:
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["/usr/local/bin/migrate", "up"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      DB_HOST: "db"
+      DB_PORT: "5432"
+      DB_USER: "${DB_USER}"
+      DB_PASS: "${DB_PASS}"
+      DB_NAME: "${DB_NAME}"
+      DB_SSLMODE: "disable"
+    networks:
+      - back-tier
+
   listen:
     build:
       context: .
+      dockerfile: Dockerfile
     depends_on:
       redis:
         condition: service_healthy
@@ -12,14 +29,42 @@ services:
         condition: service_started
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "8080"
+    environment:
+      APP_ENV: "${APP_ENV}"
+      APP_VERSION: "${APP_VERSION}"
+      APP_PORT: "8080"
+
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+      REDIS_DB: "${REDIS_DB}"
+
+      RABBITMQ_URL: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/"
+
+      DB_HOST: "db"
+      DB_PORT: "5432"
+      DB_USER: "${DB_USER}"
+      DB_PASS: "${DB_PASS}"
+      DB_NAME: "${DB_NAME}"
+      DB_SSLMODE: "disable"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     networks:
       - front-tier
       - back-tier
 
   redis:
-    image: redis:alpine
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -27,14 +72,17 @@ services:
       retries: 5
     networks:
       - back-tier
-      
+
   rabbitmq:
     image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USER}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASS}"
     ports:
       - "${AMQP_RABBITMQ_PORT}:5672"
       - "${WEBUI_RABBITMQ_PORT}:15672"
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - rabbitmq-data:/var/lib/rabbitmq
     networks:
       - back-tier
 
@@ -43,12 +91,13 @@ services:
     environment:
       POSTGRES_USER: "${DB_USER}"
       POSTGRES_PASSWORD: "${DB_PASS}"
+      POSTGRES_DB: "${DB_NAME}"
     ports:
       - "${DB_PORT}:5432"
     volumes:
-      - "db-data:/var/lib/postgresql/data"
+      - db-data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD", "pg_isready" ]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -56,16 +105,17 @@ services:
       - back-tier
 
   proxy:
-    image: nginx:latest
+    image: nginx:alpine
+    depends_on:
+      listen:
+        condition: service_healthy
     volumes:
       - type: bind
         source: ./configs/nginx/nginx.conf
         target: /etc/nginx/conf.d/default.conf
         read_only: true
-    ports: 
+    ports:
       - "${APP_PORT}:80"
-    expose:
-      - "80"
     networks:
       - front-tier
 
@@ -74,5 +124,6 @@ networks:
   back-tier:
 
 volumes:
-  rabbitmq_data:
+  redis-data:
+  rabbitmq-data:
   db-data:

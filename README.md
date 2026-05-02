@@ -130,6 +130,6 @@ docker compose logs listen --tail 100
 Do not edit generated files under `internal/database/sqlc` manually.
 
 ## Relevant Docs
-- [docs/roadmap.md](/F:/DANTE-Api-Systems/docs/roadmap.md): current ownership-oriented implementation tracker
-- [docs/cache_strategies.md](/F:/DANTE-Api-Systems/docs/cache_strategies.md): Redis key, TTL, and fallback policy
-- [docs/project_context.md](/F:/DANTE-Api-Systems/docs/project_context.md): project brief and scope framing
+- [docs/roadmap.md](/docs/roadmap.md): current ownership-oriented implementation tracker
+- [docs/cache_strategies.md](/docs/cache_strategies.md): Redis key, TTL, and fallback policy
+- [docs/project_context.md](/docs/project_context.md): project brief and scope framing

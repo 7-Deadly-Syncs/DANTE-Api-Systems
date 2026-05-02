@@ -10,6 +10,12 @@ INSERT INTO merchants (
 )
 RETURNING *;
 
+-- name: GetMerchantByID :one
+SELECT *
+FROM merchants
+WHERE id = $1
+LIMIT 1;
+
 -- name: GetMerchantByQRISCode :one
 SELECT *
 FROM merchants

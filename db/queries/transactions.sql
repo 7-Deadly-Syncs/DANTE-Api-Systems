@@ -28,6 +28,12 @@ FROM transactions
 WHERE id = $1
 LIMIT 1;
 
+-- name: GetTransactionStatusByID :one
+SELECT id, status, requested_at, processed_at, updated_at
+FROM transactions
+WHERE id = $1
+LIMIT 1;
+
 -- name: GetTransactionByIdempotencyKey :one
 SELECT *
 FROM transactions
@@ -62,3 +68,15 @@ SELECT *
 FROM transaction_events
 WHERE transaction_id = $1
 ORDER BY created_at ASC;
+
+-- name: ListTransactionsByAccountID :many
+SELECT *
+FROM transactions
+WHERE account_id = $1
+  AND (
+    $2 = TIMESTAMPTZ '0001-01-01 00:00:00+00'
+    OR created_at < $2
+    OR (created_at = $2 AND id < $3)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $4;

@@ -79,9 +79,11 @@ curl http://localhost:8080/openapi.json
 ## Local URLs
 - API root: `http://localhost:8080/`
 - Health: `http://localhost:8080/health`
+- Ready: `http://localhost:8080/ready`
 - Service info: `http://localhost:8080/info`
 - OpenAPI JSON: `http://localhost:8080/openapi.json`
 - Docs UI: `http://localhost:8080/docs`
+- Metrics: `http://localhost:8080/metrics`
 - RabbitMQ UI: `http://localhost:15672`
 
 OpenAPI docs are only enabled when `APP_ENV=development`.
@@ -126,3 +128,8 @@ docker compose logs listen --tail 100
 - Generated code: `internal/database/sqlc`
 
 Do not edit generated files under `internal/database/sqlc` manually.
+
+## Relevant Docs
+- [docs/roadmap.md](/F:/DANTE-Api-Systems/docs/roadmap.md): current ownership-oriented implementation tracker
+- [docs/cache_strategies.md](/F:/DANTE-Api-Systems/docs/cache_strategies.md): Redis key, TTL, and fallback policy
+- [docs/project_context.md](/F:/DANTE-Api-Systems/docs/project_context.md): project brief and scope framing

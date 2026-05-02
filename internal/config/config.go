@@ -12,6 +12,8 @@ import (
 // Config contains the runtime configuration used by the service.
 type Config struct {
 	App      AppConfig
+	Redis    RedisConfig
+	RabbitMQ RabbitMQConfig
 	Database DatabaseConfig
 }
 
@@ -38,6 +40,29 @@ type DatabaseConfig struct {
 	ConnMaxLifetime time.Duration
 }
 
+// RedisConfig contains Redis connection settings.
+type RedisConfig struct {
+	Addr            string
+	Host            string
+	Port            int
+	Password        string
+	DB              int
+	DialTimeout     time.Duration
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	PoolSize        int
+	MinIdleConns    int
+	PoolTimeout     time.Duration
+	ConnMaxIdleTime time.Duration
+	ConnMaxLifetime time.Duration
+}
+
+// RabbitMQConfig contains RabbitMQ connection settings.
+type RabbitMQConfig struct {
+	URL         string
+	DialTimeout time.Duration
+}
+
 // Load reads configuration from environment variables.
 func Load() Config {
 	return Config{
@@ -45,6 +70,25 @@ func Load() Config {
 			Environment: getenv("APP_ENV", "production"),
 			Version:     getenv("APP_VERSION", "0.1.0"),
 			Port:        getenv("APP_PORT", "8080"),
+		},
+		Redis: RedisConfig{
+			Addr:            getenv("REDIS_ADDR", ""),
+			Host:            getenv("REDIS_HOST", "localhost"),
+			Port:            getenvInt("REDIS_PORT", 6379),
+			Password:        os.Getenv("REDIS_PASSWORD"),
+			DB:              getenvInt("REDIS_DB", 0),
+			DialTimeout:     getenvDuration("REDIS_DIAL_TIMEOUT", 5*time.Second),
+			ReadTimeout:     getenvDuration("REDIS_READ_TIMEOUT", 3*time.Second),
+			WriteTimeout:    getenvDuration("REDIS_WRITE_TIMEOUT", 3*time.Second),
+			PoolSize:        getenvInt("REDIS_POOL_SIZE", 10),
+			MinIdleConns:    getenvInt("REDIS_MIN_IDLE_CONNS", 5),
+			PoolTimeout:     getenvDuration("REDIS_POOL_TIMEOUT", 4*time.Second),
+			ConnMaxIdleTime: getenvDuration("REDIS_CONN_MAX_IDLE_TIME", 5*time.Minute),
+			ConnMaxLifetime: getenvDuration("REDIS_CONN_MAX_LIFETIME", 30*time.Minute),
+		},
+		RabbitMQ: RabbitMQConfig{
+			URL:         getenv("RABBITMQ_URL", ""),
+			DialTimeout: getenvDuration("RABBITMQ_DIAL_TIMEOUT", 3*time.Second),
 		},
 		Database: DatabaseConfig{
 			Host:            getenv("DB_HOST", "localhost"),
@@ -106,6 +150,15 @@ func (c DatabaseConfig) dsn(host string, port int) string {
 	}
 
 	return dsn.String()
+}
+
+// Address returns the Redis network address used by clients.
+func (c RedisConfig) Address() string {
+	if strings.TrimSpace(c.Addr) != "" {
+		return strings.TrimSpace(c.Addr)
+	}
+
+	return fmt.Sprintf("%s:%d", c.Host, c.Port)
 }
 
 func getenv(key, fallback string) string {

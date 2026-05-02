@@ -18,12 +18,15 @@ type Querier interface {
 	CreateTransactionEvent(ctx context.Context, arg CreateTransactionEventParams) (TransactionEvent, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	GetAccountByNumber(ctx context.Context, accountNumber string) (Account, error)
+	GetMerchantByID(ctx context.Context, id uuid.UUID) (Merchant, error)
 	GetMerchantByQRISCode(ctx context.Context, qrisCode string) (Merchant, error)
 	GetTransactionByID(ctx context.Context, id uuid.UUID) (Transaction, error)
 	GetTransactionByIdempotencyKey(ctx context.Context, idempotencyKey string) (Transaction, error)
+	GetTransactionStatusByID(ctx context.Context, id uuid.UUID) (GetTransactionStatusByIDRow, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByPhoneNumber(ctx context.Context, phoneNumber sql.NullString) (User, error)
 	ListTransactionEventsByTransactionID(ctx context.Context, transactionID uuid.UUID) ([]TransactionEvent, error)
+	ListTransactionsByAccountID(ctx context.Context, arg ListTransactionsByAccountIDParams) ([]Transaction, error)
 	UpdateTransactionStatus(ctx context.Context, arg UpdateTransactionStatusParams) (Transaction, error)
 }
 

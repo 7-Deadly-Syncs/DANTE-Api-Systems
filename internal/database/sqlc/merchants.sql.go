@@ -8,6 +8,8 @@ package sqlc
 import (
 	"context"
 	"database/sql"
+
+	"github.com/google/uuid"
 )
 
 const createMerchant = `-- name: CreateMerchant :one
@@ -31,6 +33,26 @@ type CreateMerchantParams struct {
 
 func (q *Queries) CreateMerchant(ctx context.Context, arg CreateMerchantParams) (Merchant, error) {
 	row := q.db.QueryRowContext(ctx, createMerchant, arg.Name, arg.QrisCode, arg.Category)
+	var i Merchant
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.QrisCode,
+		&i.Category,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getMerchantByID = `-- name: GetMerchantByID :one
+SELECT id, name, qris_code, category, created_at
+FROM merchants
+WHERE id = $1
+LIMIT 1
+`
+
+func (q *Queries) GetMerchantByID(ctx context.Context, id uuid.UUID) (Merchant, error) {
+	row := q.db.QueryRowContext(ctx, getMerchantByID, id)
 	var i Merchant
 	err := row.Scan(
 		&i.ID,

@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -178,6 +179,34 @@ func (q *Queries) GetTransactionByIdempotencyKey(ctx context.Context, idempotenc
 	return i, err
 }
 
+const getTransactionStatusByID = `-- name: GetTransactionStatusByID :one
+SELECT id, status, requested_at, processed_at, updated_at
+FROM transactions
+WHERE id = $1
+LIMIT 1
+`
+
+type GetTransactionStatusByIDRow struct {
+	ID          uuid.UUID    `json:"id"`
+	Status      string       `json:"status"`
+	RequestedAt time.Time    `json:"requested_at"`
+	ProcessedAt sql.NullTime `json:"processed_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
+}
+
+func (q *Queries) GetTransactionStatusByID(ctx context.Context, id uuid.UUID) (GetTransactionStatusByIDRow, error) {
+	row := q.db.QueryRowContext(ctx, getTransactionStatusByID, id)
+	var i GetTransactionStatusByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Status,
+		&i.RequestedAt,
+		&i.ProcessedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listTransactionEventsByTransactionID = `-- name: ListTransactionEventsByTransactionID :many
 SELECT id, transaction_id, event_type, message, metadata, created_at
 FROM transaction_events
@@ -201,6 +230,68 @@ func (q *Queries) ListTransactionEventsByTransactionID(ctx context.Context, tran
 			&i.Message,
 			&i.Metadata,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTransactionsByAccountID = `-- name: ListTransactionsByAccountID :many
+SELECT id, user_id, merchant_id, account_id, amount, status, idempotency_key, legacy_reference_id, failure_reason, requested_at, processed_at, created_at, updated_at
+FROM transactions
+WHERE account_id = $1
+  AND (
+    $2 = TIMESTAMPTZ '0001-01-01 00:00:00+00'
+    OR created_at < $2
+    OR (created_at = $2 AND id < $3)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $4
+`
+
+type ListTransactionsByAccountIDParams struct {
+	AccountID uuid.UUID   `json:"account_id"`
+	Column2   interface{} `json:"column_2"`
+	ID        uuid.UUID   `json:"id"`
+	Limit     int32       `json:"limit"`
+}
+
+func (q *Queries) ListTransactionsByAccountID(ctx context.Context, arg ListTransactionsByAccountIDParams) ([]Transaction, error) {
+	rows, err := q.db.QueryContext(ctx, listTransactionsByAccountID,
+		arg.AccountID,
+		arg.Column2,
+		arg.ID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Transaction{}
+	for rows.Next() {
+		var i Transaction
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.MerchantID,
+			&i.AccountID,
+			&i.Amount,
+			&i.Status,
+			&i.IdempotencyKey,
+			&i.LegacyReferenceID,
+			&i.FailureReason,
+			&i.RequestedAt,
+			&i.ProcessedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

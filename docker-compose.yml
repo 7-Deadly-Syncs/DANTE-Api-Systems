@@ -107,15 +107,13 @@ services:
       - back-tier
 
   proxy:
-    image: nginx:alpine
+    build:
+      context: ./configs/nginx
+      dockerfile: Dockerfile
+    image: dante-api-systems-proxy:local
     depends_on:
       listen:
         condition: service_healthy
-    volumes:
-      - type: bind
-        source: ./configs/nginx/nginx.conf
-        target: /etc/nginx/conf.d/default.conf
-        read_only: true
     ports:
       - "${APP_PORT}:80"
     networks:

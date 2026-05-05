@@ -1,0 +1,13 @@
+.git
+.github
+.gocache
+
+.env
+.env.*
+!.env.example
+
+docs
+scripts
+
+README.md
+LICENSE

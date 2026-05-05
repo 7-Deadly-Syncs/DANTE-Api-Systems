@@ -1,8 +1,9 @@
+x-dante-image: &dante-image
+  image: dante-api-systems-app:local
+
 services:
   migrate:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *dante-image
     command: ["/usr/local/bin/migrate", "up"]
     depends_on:
       db:
@@ -19,6 +20,7 @@ services:
       - back-tier
 
   listen:
+    <<: *dante-image
     build:
       context: .
       dockerfile: Dockerfile

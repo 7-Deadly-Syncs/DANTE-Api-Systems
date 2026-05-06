@@ -164,7 +164,7 @@ Focus: deployment/runtime stability, queue infrastructure support, network behav
 - [ ] Add baseline direct-legacy scenario
 - [ ] Add DANTE-mediated scenario
 - [ ] Add tc-netem network simulation script
-- [ ] Define network profiles: normal, high latency, packet loss, constrained bandwidth
+- [x] Define network profiles: normal, high latency, packet loss, constrained bandwidth
 - [ ] Store benchmark run metadata
 - [ ] Store benchmark result summaries
 - [ ] Compare p95 latency, throughput, error rate, cache hit rate, and legacy call count
@@ -191,16 +191,16 @@ Focus: database evolution, observability, cross-cutting repository work, and tea
 ### Observability Layer
 
 - [x] Expose `/metrics`
-- [ ] Track endpoint latency
-- [ ] Track p50/p95/p99 latency
-- [ ] Track request count and error rate
-- [ ] Track Redis cache hit/miss
+- [x] Track endpoint latency
+- [x] Track p50/p95/p99 latency
+- [x] Track request count and error rate
+- [x] Track Redis cache hit/miss
 - [ ] Track legacy call latency
 - [ ] Track legacy call success/failure rate
 - [ ] Track RabbitMQ queue depth / worker lag
 - [ ] Track transaction state counts
-- [ ] Add Prometheus scrape config
-- [ ] Add Grafana dashboard
+- [x] Add Prometheus scrape config
+- [x] Add Grafana dashboard
 
 ---
 

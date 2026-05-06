@@ -15,6 +15,7 @@ type Config struct {
 	Redis    RedisConfig
 	RabbitMQ RabbitMQConfig
 	Database DatabaseConfig
+	Observability ObservabilityConfig
 }
 
 // AppConfig contains application-level settings.
@@ -63,6 +64,14 @@ type RabbitMQConfig struct {
 	DialTimeout time.Duration
 }
 
+// ObservabilityConfig contains metrics/tracing runtime settings.
+type ObservabilityConfig struct {
+	ServiceName      string
+	TracingEnabled  bool
+	JaegerEndpoint  string
+	TraceSampleRatio float64
+}
+
 // Load reads configuration from environment variables.
 func Load() Config {
 	return Config{
@@ -103,6 +112,12 @@ func Load() Config {
 			MaxIdleConns:    getenvInt("DB_MAX_IDLE_CONNS", 25),
 			ConnMaxIdleTime: getenvDuration("DB_CONN_MAX_IDLE_TIME", 5*time.Minute),
 			ConnMaxLifetime: getenvDuration("DB_CONN_MAX_LIFETIME", 30*time.Minute),
+		},
+		Observability: ObservabilityConfig{
+			ServiceName:       getenv("OTEL_SERVICE_NAME", "dante-api-systems"),
+			TracingEnabled:   getenvBool("TRACING_ENABLED", true),
+			JaegerEndpoint:   getenv("JAEGER_OTLP_ENDPOINT", "jaeger:4318"),
+			TraceSampleRatio: getenvFloat("TRACE_SAMPLE_RATIO", 1.0),
 		},
 	}
 }
@@ -176,6 +191,34 @@ func getenvInt(key string, fallback int) int {
 	}
 
 	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+
+	return value
+}
+
+func getenvBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+
+	return value
+}
+
+func getenvFloat(key string, fallback float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+
+	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
 		return fallback
 	}

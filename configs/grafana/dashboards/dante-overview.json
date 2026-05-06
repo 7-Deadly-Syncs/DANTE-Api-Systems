@@ -1,1 +1,181 @@
-
+{
+  "uid": "dante-overview",
+  "title": "DANTE Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "tags": ["dante", "qris", "observability"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "HTTP Request Rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(dante_http_requests_total[1m])) by (method, path)",
+          "legendFormat": "{{method}} {{path}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "HTTP Latency p50 / p95 / p99",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum(rate(dante_http_request_duration_seconds_bucket[5m])) by (le, path))",
+          "legendFormat": "p50 {{path}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum(rate(dante_http_request_duration_seconds_bucket[5m])) by (le, path))",
+          "legendFormat": "p95 {{path}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum(rate(dante_http_request_duration_seconds_bucket[5m])) by (le, path))",
+          "legendFormat": "p99 {{path}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "HTTP Error Rate 5xx",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(dante_http_requests_total{status_code=~\"5..\"}[5m])) / sum(rate(dante_http_requests_total[5m]))",
+          "legendFormat": "5xx error rate"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Cache Hit Rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(merchant_cache_hits_total[5m]) / (rate(merchant_cache_hits_total[5m]) + rate(merchant_cache_misses_total[5m]))",
+          "legendFormat": "merchant"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(transaction_status_cache_hits_total[5m]) / (rate(transaction_status_cache_hits_total[5m]) + rate(transaction_status_cache_misses_total[5m]))",
+          "legendFormat": "transaction_status"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "PostgreSQL Connections",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dante_db_open_connections",
+          "legendFormat": "open"
+        },
+        {
+          "refId": "B",
+          "expr": "dante_db_in_use_connections",
+          "legendFormat": "in_use"
+        },
+        {
+          "refId": "C",
+          "expr": "dante_db_idle_connections",
+          "legendFormat": "idle"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Redis Pool Connections",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dante_redis_pool_total_connections",
+          "legendFormat": "total"
+        },
+        {
+          "refId": "B",
+          "expr": "dante_redis_pool_idle_connections",
+          "legendFormat": "idle"
+        },
+        {
+          "refId": "C",
+          "expr": "dante_redis_pool_stale_connections",
+          "legendFormat": "stale"
+        }
+      ]
+    }
+  ]
+}

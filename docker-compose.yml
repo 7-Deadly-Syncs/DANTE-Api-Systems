@@ -32,6 +32,188 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      jaeger:
+        condition: service_started
+    expose:
+      - "8080"
+    environment:
+      APP_ENV: "${APP_ENV}"
+      APP_VERSION: "${APP_VERSION}"
+      APP_PORT: "8080"
+
+      TRACING_ENABLED: "${TRACING_ENABLED:-true}"
+      JAEGER_OTLP_ENDPOINT: "${JAEGER_OTLP_ENDPOINT:-jaeger:4318}"
+      OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-dante-api-systems}"
+      TRACE_SAMPLE_RATIO: "${TRACE_SAMPLE_RATIO:-1.0}"
+
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+      REDIS_DB: "${REDIS_DB}"
+
+      RABBITMQ_URL: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/"
+
+      DB_HOST: "db"
+      DB_PORT: "5432"
+      DB_USER: "${DB_USER}"
+      DB_PASS: "${DB_PASS}"
+      DB_NAME: "${DB_NAME}"
+      DB_SSLMODE: "disable"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - front-tier
+      - back-tier
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - back-tier
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USER}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASS}"
+    ports:
+      - "${AMQP_RABBITMQ_PORT}:5672"
+      - "${WEBUI_RABBITMQ_PORT}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - back-tier
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: "${DB_USER}"
+      POSTGRES_PASSWORD: "${DB_PASS}"
+      POSTGRES_DB: "${DB_NAME}"
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - back-tier
+
+  proxy:
+    build:
+      context: ./configs/nginx
+      dockerfile: Dockerfile
+    image: dante-api-systems-proxy:local
+    depends_on:
+      listen:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT}:80"
+    networks:
+      - front-tier
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    depends_on:
+      listen:
+        condition: service_healthy
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - back-tier
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - back-tier
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    depends_on:
+      - prometheus
+      - jaeger
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - back-tier
+
+networks:
+  front-tier:
+  back-tier:
+
+volumes:
+  redis-data:
+  rabbitmq-data:
+  db-data:
+  prometheus-data:
+  grafana-data:x-dante-build: &dante-build
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+services:
+  migrate:
+    <<: *dante-build
+    command: ["/usr/local/bin/migrate", "up"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      DB_HOST: "db"
+      DB_PORT: "5432"
+      DB_USER: "${DB_USER}"
+      DB_PASS: "${DB_PASS}"
+      DB_NAME: "${DB_NAME}"
+      DB_SSLMODE: "disable"
+    networks:
+      - back-tier
+
+  listen:
+    <<: *dante-build
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     expose:
       - "8080"
     environment:

@@ -6,6 +6,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/cache"
@@ -14,7 +17,9 @@ import (
 	dbsqlc "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database/sqlc"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/legacy"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/cachemetrics"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/httpobs"
 	observabilitymetrics "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/metrics"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/queue"
 	merchantservice "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/service/merchant"
 	transactionservice "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/service/transaction"
@@ -147,13 +152,29 @@ type dependencyStatus struct {
 func Start() {
 	cfg := config.Load()
 
-	redisClient, err := cache.Open(context.Background(), cfg.Redis)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	shutdownTracing, err := tracing.Init(ctx, cfg.Observability, cfg.App)
+	if err != nil {
+		log.Fatalf("tracing startup failed: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Printf("tracing shutdown failed: %v", err)
+		}
+	}()
+
+	redisClient, err := cache.Open(ctx, cfg.Redis)
 	if err != nil {
 		log.Fatalf("redis startup failed: %v", err)
 	}
 	defer redisClient.Close()
 
-	db, err := database.Open(context.Background(), cfg.Database)
+	db, err := database.Open(ctx, cfg.Database)
 	if err != nil {
 		log.Fatalf("database startup failed: %v", err)
 	}
@@ -175,8 +196,16 @@ func Start() {
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
+
+	// Observability middleware.
+	// Tracing harus dipasang sebelum request masuk ke Huma handler.
+	// Metrics dipasang agar setiap endpoint punya request count dan latency histogram.
+	router.Use(httpobs.Tracing(cfg.Observability.ServiceName))
+	router.Use(httpobs.Metrics(metricsHandler))
+
 	router.Use(middleware.Logger)
 	router.Use(middleware.Recoverer)
+
 	router.Handle("/metrics", metricsHandler)
 
 	apiConfig := huma.DefaultConfig("DANTE API Systems", "0.1.0")

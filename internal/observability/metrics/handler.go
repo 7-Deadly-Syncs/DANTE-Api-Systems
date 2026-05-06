@@ -2,17 +2,16 @@ package metrics
 
 import (
 	"database/sql"
-	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/cachemetrics"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
-
-const contentType = "text/plain; version=0.0.4; charset=utf-8"
 
 // Snapshotter exposes cache metrics in a form suitable for export.
 type Snapshotter interface {
@@ -26,117 +25,268 @@ type Config struct {
 	Environment string
 }
 
-// Handler renders Prometheus exposition text for app-level and pool metrics.
+// Handler renders Prometheus metrics and owns the Prometheus registry.
 type Handler struct {
 	config    Config
 	cache     Snapshotter
 	db        *sql.DB
 	redis     *redis.Client
 	startedAt time.Time
+
+	registry    *prometheus.Registry
+	promHandler http.Handler
+
+	httpRequestsTotal    *prometheus.CounterVec
+	httpRequestDuration  *prometheus.HistogramVec
+	httpRequestsInFlight prometheus.Gauge
 }
 
 // NewHandler constructs a Prometheus-compatible metrics handler.
 func NewHandler(config Config, cache Snapshotter, db *sql.DB, redisClient *redis.Client) *Handler {
-	return &Handler{
-		config:    config,
-		cache:     cache,
-		db:        db,
-		redis:     redisClient,
-		startedAt: time.Now().UTC(),
+	startedAt := time.Now().UTC()
+
+	registry := prometheus.NewRegistry()
+
+	registry.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+
+	buildInfo := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dante_build_info",
+		Help: "Static build and environment metadata for the running service.",
+	}, []string{"service", "version", "environment"})
+	buildInfo.WithLabelValues(config.Service, config.Version, config.Environment).Set(1)
+
+	uptime := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "dante_process_uptime_seconds",
+		Help: "Seconds since the DANTE process started.",
+	}, func() float64 {
+		return time.Since(startedAt).Seconds()
+	})
+
+	httpRequestsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "dante",
+		Subsystem: "http",
+		Name:      "requests_total",
+		Help:      "Total HTTP requests handled by method, route, and status code.",
+	}, []string{"method", "path", "status_code"})
+
+	httpRequestDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "dante",
+		Subsystem: "http",
+		Name:      "request_duration_seconds",
+		Help:      "HTTP request duration distribution in seconds.",
+		Buckets: []float64{
+			0.005,
+			0.010,
+			0.025,
+			0.050,
+			0.100,
+			0.200,
+			0.500,
+			1.000,
+			2.500,
+			5.000,
+		},
+	}, []string{"method", "path"})
+
+	httpRequestsInFlight := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "dante",
+		Subsystem: "http",
+		Name:      "requests_in_flight",
+		Help:      "Current number of HTTP requests being processed.",
+	})
+
+	registry.MustRegister(
+		buildInfo,
+		uptime,
+		httpRequestsTotal,
+		httpRequestDuration,
+		httpRequestsInFlight,
+	)
+
+	registerDatabaseStats(registry, db)
+	registerRedisStats(registry, redisClient)
+
+	if cache != nil {
+		registry.MustRegister(newCacheSnapshotCollector(cache))
 	}
+
+	handler := &Handler{
+		config:               config,
+		cache:                cache,
+		db:                   db,
+		redis:                redisClient,
+		startedAt:            startedAt,
+		registry:             registry,
+		httpRequestsTotal:    httpRequestsTotal,
+		httpRequestDuration:  httpRequestDuration,
+		httpRequestsInFlight: httpRequestsInFlight,
+	}
+
+	handler.promHandler = promhttp.HandlerFor(registry, promhttp.HandlerOpts{
+		EnableOpenMetrics: true,
+	})
+
+	return handler
 }
 
-// ServeHTTP writes metrics in Prometheus text exposition format.
+// ServeHTTP serves Prometheus metrics.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", contentType)
-
-	var builder strings.Builder
-	h.writeBuildInfo(&builder)
-	h.writeUptime(&builder)
-	h.writeDatabaseStats(&builder)
-	h.writeRedisStats(&builder)
-	h.writeCacheStats(&builder)
-
-	_, _ = w.Write([]byte(builder.String()))
+	h.promHandler.ServeHTTP(w, r)
 }
 
-func (h *Handler) writeBuildInfo(builder *strings.Builder) {
-	builder.WriteString("# HELP dante_build_info Static build and environment metadata for the running service.\n")
-	builder.WriteString("# TYPE dante_build_info gauge\n")
-	builder.WriteString(fmt.Sprintf(
-		"dante_build_info{service=%s,version=%s,environment=%s} 1\n",
-		quoteLabelValue(h.config.Service),
-		quoteLabelValue(h.config.Version),
-		quoteLabelValue(h.config.Environment),
-	))
+// IncHTTPInFlight increments current in-flight HTTP request gauge.
+func (h *Handler) IncHTTPInFlight() {
+	h.httpRequestsInFlight.Inc()
 }
 
-func (h *Handler) writeUptime(builder *strings.Builder) {
-	builder.WriteString("# HELP dante_process_uptime_seconds Seconds since the DANTE process started.\n")
-	builder.WriteString("# TYPE dante_process_uptime_seconds gauge\n")
-	builder.WriteString(fmt.Sprintf("dante_process_uptime_seconds %.6f\n", time.Since(h.startedAt).Seconds()))
+// DecHTTPInFlight decrements current in-flight HTTP request gauge.
+func (h *Handler) DecHTTPInFlight() {
+	h.httpRequestsInFlight.Dec()
 }
 
-func (h *Handler) writeDatabaseStats(builder *strings.Builder) {
-	stats := h.db.Stats()
-
-	writeGauge(builder, "dante_db_open_connections", "Number of open PostgreSQL connections.", float64(stats.OpenConnections))
-	writeGauge(builder, "dante_db_in_use_connections", "Number of PostgreSQL connections currently in use.", float64(stats.InUse))
-	writeGauge(builder, "dante_db_idle_connections", "Number of idle PostgreSQL connections.", float64(stats.Idle))
-	writeCounter(builder, "dante_db_wait_count_total", "Total number of waits for a PostgreSQL connection.", float64(stats.WaitCount))
-	writeCounter(builder, "dante_db_wait_duration_seconds_total", "Total time spent waiting for a PostgreSQL connection.", stats.WaitDuration.Seconds())
-	writeCounter(builder, "dante_db_max_idle_closed_total", "Total PostgreSQL connections closed due to idle count limits.", float64(stats.MaxIdleClosed))
-	writeCounter(builder, "dante_db_max_idle_time_closed_total", "Total PostgreSQL connections closed due to idle time limits.", float64(stats.MaxIdleTimeClosed))
-	writeCounter(builder, "dante_db_max_lifetime_closed_total", "Total PostgreSQL connections closed due to lifetime limits.", float64(stats.MaxLifetimeClosed))
+// ObserveHTTPRequest records HTTP request count and latency.
+func (h *Handler) ObserveHTTPRequest(method, path string, statusCode int, duration time.Duration) {
+	h.httpRequestsTotal.WithLabelValues(method, path, strconv.Itoa(statusCode)).Inc()
+	h.httpRequestDuration.WithLabelValues(method, path).Observe(duration.Seconds())
 }
 
-func (h *Handler) writeRedisStats(builder *strings.Builder) {
-	stats := h.redis.PoolStats()
+func registerDatabaseStats(registry *prometheus.Registry, db *sql.DB) {
+	if db == nil {
+		return
+	}
 
-	writeCounter(builder, "dante_redis_pool_hits_total", "Total Redis pool hits.", float64(stats.Hits))
-	writeCounter(builder, "dante_redis_pool_misses_total", "Total Redis pool misses.", float64(stats.Misses))
-	writeCounter(builder, "dante_redis_pool_timeouts_total", "Total Redis pool timeouts.", float64(stats.Timeouts))
-	writeGauge(builder, "dante_redis_pool_total_connections", "Current total Redis pool connections.", float64(stats.TotalConns))
-	writeGauge(builder, "dante_redis_pool_idle_connections", "Current idle Redis pool connections.", float64(stats.IdleConns))
-	writeGauge(builder, "dante_redis_pool_stale_connections", "Current stale Redis pool connections.", float64(stats.StaleConns))
+	registry.MustRegister(
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "dante_db_open_connections",
+			Help: "Number of open PostgreSQL connections.",
+		}, func() float64 {
+			return float64(db.Stats().OpenConnections)
+		}),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "dante_db_in_use_connections",
+			Help: "Number of PostgreSQL connections currently in use.",
+		}, func() float64 {
+			return float64(db.Stats().InUse)
+		}),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "dante_db_idle_connections",
+			Help: "Number of idle PostgreSQL connections.",
+		}, func() float64 {
+			return float64(db.Stats().Idle)
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "dante_db_wait_count_total",
+			Help: "Total number of waits for a PostgreSQL connection.",
+		}, func() float64 {
+			return float64(db.Stats().WaitCount)
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "dante_db_wait_duration_seconds_total",
+			Help: "Total time spent waiting for a PostgreSQL connection.",
+		}, func() float64 {
+			return db.Stats().WaitDuration.Seconds()
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "dante_db_max_idle_closed_total",
+			Help: "Total PostgreSQL connections closed due to idle count limits.",
+		}, func() float64 {
+			return float64(db.Stats().MaxIdleClosed)
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "dante_db_max_idle_time_closed_total",
+			Help: "Total PostgreSQL connections closed due to idle time limits.",
+		}, func() float64 {
+			return float64(db.Stats().MaxIdleTimeClosed)
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "dante_db_max_lifetime_closed_total",
+			Help: "Total PostgreSQL connections closed due to lifetime limits.",
+		}, func() float64 {
+			return float64(db.Stats().MaxLifetimeClosed)
+		}),
+	)
 }
 
-func (h *Handler) writeCacheStats(builder *strings.Builder) {
-	for _, entry := range h.cache.Snapshot() {
-		writeCounter(builder, entry.Name, "Application cache counter.", float64(entry.Value))
+func registerRedisStats(registry *prometheus.Registry, redisClient *redis.Client) {
+	if redisClient == nil {
+		return
+	}
+
+	registry.MustRegister(
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "dante_redis_pool_hits_total",
+			Help: "Total Redis pool hits.",
+		}, func() float64 {
+			return float64(redisClient.PoolStats().Hits)
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "dante_redis_pool_misses_total",
+			Help: "Total Redis pool misses.",
+		}, func() float64 {
+			return float64(redisClient.PoolStats().Misses)
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "dante_redis_pool_timeouts_total",
+			Help: "Total Redis pool timeouts.",
+		}, func() float64 {
+			return float64(redisClient.PoolStats().Timeouts)
+		}),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "dante_redis_pool_total_connections",
+			Help: "Current total Redis pool connections.",
+		}, func() float64 {
+			return float64(redisClient.PoolStats().TotalConns)
+		}),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "dante_redis_pool_idle_connections",
+			Help: "Current idle Redis pool connections.",
+		}, func() float64 {
+			return float64(redisClient.PoolStats().IdleConns)
+		}),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "dante_redis_pool_stale_connections",
+			Help: "Current stale Redis pool connections.",
+		}, func() float64 {
+			return float64(redisClient.PoolStats().StaleConns)
+		}),
+	)
+}
+
+type cacheSnapshotCollector struct {
+	snapshotter Snapshotter
+}
+
+func newCacheSnapshotCollector(snapshotter Snapshotter) *cacheSnapshotCollector {
+	return &cacheSnapshotCollector{
+		snapshotter: snapshotter,
 	}
 }
 
-func writeCounter(builder *strings.Builder, name, help string, value float64) {
-	builder.WriteString("# HELP ")
-	builder.WriteString(name)
-	builder.WriteByte(' ')
-	builder.WriteString(help)
-	builder.WriteByte('\n')
-	builder.WriteString("# TYPE ")
-	builder.WriteString(name)
-	builder.WriteString(" counter\n")
-	builder.WriteString(name)
-	builder.WriteByte(' ')
-	builder.WriteString(strconv.FormatFloat(value, 'f', -1, 64))
-	builder.WriteByte('\n')
-}
+// Describe intentionally sends no descriptors, making this an unchecked collector.
+// This allows the in-memory cache recorder to expose currently known metric names.
+func (c *cacheSnapshotCollector) Describe(ch chan<- *prometheus.Desc) {}
 
-func writeGauge(builder *strings.Builder, name, help string, value float64) {
-	builder.WriteString("# HELP ")
-	builder.WriteString(name)
-	builder.WriteByte(' ')
-	builder.WriteString(help)
-	builder.WriteByte('\n')
-	builder.WriteString("# TYPE ")
-	builder.WriteString(name)
-	builder.WriteString(" gauge\n")
-	builder.WriteString(name)
-	builder.WriteByte(' ')
-	builder.WriteString(strconv.FormatFloat(value, 'f', -1, 64))
-	builder.WriteByte('\n')
-}
+func (c *cacheSnapshotCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, entry := range c.snapshotter.Snapshot() {
+		desc := prometheus.NewDesc(
+			entry.Name,
+			"Application cache counter.",
+			nil,
+			nil,
+		)
 
-func quoteLabelValue(value string) string {
-	return strconv.Quote(value)
+		metric, err := prometheus.NewConstMetric(
+			desc,
+			prometheus.CounterValue,
+			float64(entry.Value),
+		)
+		if err != nil {
+			continue
+		}
+
+		ch <- metric
+	}
 }

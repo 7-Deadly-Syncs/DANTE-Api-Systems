@@ -1,79 +1,101 @@
 # Auth Flow
 
-This document defines the recommended authentication and transaction-authorization boundary for `client -> DANTE -> legacy`.
+Dokumen ini menjelaskan alur `authentication` dan `transaction authorization` untuk `client -> DANTE -> legacy`.
 
-The goal is to keep DANTE as the client-facing middleware while preserving the legacy core banking system as the authority for credentials, account status, and financial-transaction approval.
+Tujuannya adalah supaya:
+
+- DANTE tetap menjadi `client-facing middleware`
+- legacy tetap menjadi sumber kebenaran untuk `credentials`, `account status`, dan approval transaksi
+- pembagian tanggung jawab antara DANTE dan legacy jelas
 
 ## Core Principles
 
-- `username + password` is used for `login authentication`
-- `access token` / `session token` is used for authenticated access after login
-- `transaction PIN` / `mPIN` is used only for `financial transaction authorization`
-- DANTE should issue the client-facing session/token
-- Legacy should remain the authority for credential validation, account status, and transaction approval
-- Legacy session references or tokens, if they exist, should stay internal to `DANTE <-> legacy`
+- `username + password` dipakai untuk `login`
+- `access token` / `session token` dipakai setelah login berhasil
+- `transaction PIN` / `mPIN` dipakai hanya untuk otorisasi transaksi finansial
+- token yang dipakai client sebaiknya dibuat oleh DANTE
+- legacy tetap menjadi pihak yang memvalidasi credential, status account, dan approval transaksi
+- kalau legacy punya session reference atau token internal, itu cukup dipakai di jalur `DANTE <-> legacy`
 
 ## Responsibility Boundary
 
 ### DANTE responsibilities
 
-- accept and validate client requests
-- enforce `rate limiting`, tracing, and audit logging
-- issue and validate client-facing session/access tokens
-- normalize responses and hide raw legacy internals
-- orchestrate async transaction flows through queue/worker components
+- menerima dan memvalidasi `client request`
+- menjalankan `rate limiting`, tracing, dan `audit logging`
+- membuat dan memvalidasi `session/access token` untuk client
+- merapikan response sebelum dikirim ke client
+- menyembunyikan detail internal legacy dari client
+- mengatur `async transaction flow` lewat `queue/worker components`
 
 ### Legacy responsibilities
 
 - validate `username + password`
 - validate `transaction PIN`
-- return authoritative `account status`
-- return authoritative `account permissions`
-- execute financial transactions such as transfers and QRIS payments
+- mengembalikan `account status` yang authoritative
+- mengembalikan `account permissions` yang authoritative
+- mengeksekusi `financial transaction` seperti transfer dan QRIS payment
 
 ## Login Flow
 
 1. Client sends `username` and `password` to DANTE.
-2. DANTE validates the request format and applies `rate limiting`, tracing, and audit logging.
-3. DANTE forwards the credential-validation request to legacy.
+2. DANTE memvalidasi format request, lalu menjalankan `rate limiting`, tracing, dan `audit logging`.
+3. DANTE meneruskan request validasi credential ke legacy.
 4. Legacy validates:
    - username exists
    - password is correct
-   - account or customer is active
-   - channel is allowed
-   - account is not blocked or restricted
-5. Legacy returns the authoritative login result to DANTE.
-6. DANTE issues its own client-facing session or `access token`.
-7. DANTE returns the DANTE-issued token to the client.
+   - `account` atau `customer` masih active
+   - `channel` diizinkan
+   - account tidak blocked atau restricted
+5. Legacy mengembalikan hasil login yang authoritative ke DANTE.
+6. DANTE membuat `client-facing session` atau `access token` miliknya sendiri.
+7. DANTE mengembalikan `DANTE-issued token` ke client.
 
 ## Post-Login Flow
 
-After login succeeds, the client should call DANTE using the DANTE-issued token.
+Setelah login berhasil, client memanggil DANTE menggunakan `DANTE-issued token`.
 
-- `non-financial actions` should rely on the authenticated DANTE session
-- `financial actions` should require `transaction PIN` in addition to the authenticated session
+- `non-financial actions` cukup memakai session yang sudah authenticated
+- `financial actions` harus meminta `transaction PIN` selain session yang sudah authenticated
+
+## Example Authenticated Request
+
+Contoh request dari client ke DANTE setelah login berhasil:
+
+```http
+GET /v1/accounts/ACC987654/balance HTTP/1.1
+Host: api.dante.local
+Authorization: Bearer dante-access-token-123
+X-Request-ID: req-001
+```
+
+Contoh ini menunjukkan bahwa:
+
+- client memakai token dari DANTE, bukan token raw dari legacy
+- token dikirim lewat header `Authorization: Bearer ...`
+- DANTE yang akan memvalidasi token tersebut sebelum meneruskan flow ke service internal atau ke legacy jika diperlukan
 
 ## Financial Transaction Flow
 
-For transfers and QRIS payments:
+Untuk transfer dan QRIS payment:
 
 1. Client sends the transaction request to DANTE with:
    - DANTE session/access token
    - transaction details
    - `transaction PIN`
-2. DANTE validates the session, schema, idempotency requirements, and request metadata.
-3. DANTE forwards the financial request to the legacy-backed execution flow.
+2. DANTE memvalidasi session, schema, kebutuhan `idempotency`, dan `request metadata`.
+3. DANTE meneruskan request transaksi ke flow eksekusi yang terhubung ke legacy.
 4. Legacy validates:
-   - account is allowed to perform the transaction
-   - balance / limits / status are valid
-   - `transaction PIN` is correct
-   - transaction rules pass
-5. Legacy executes the transaction or returns the authoritative failure result.
-6. DANTE stores or propagates the outcome according to the API flow.
+   - account diizinkan untuk melakukan transaksi
+   - `balance` / `limits` / `status` valid
+   - `transaction PIN` benar
+   - aturan transaksi lolos
+5. Legacy mengeksekusi transaksi atau mengembalikan hasil gagal yang authoritative.
+6. DANTE menyimpan hasilnya dan mengembalikan response sesuai `API flow`.
 
 ## Recommended Legacy Endpoints
 
-The legacy side should expose at least these business endpoints:
+Sisi legacy sebaiknya punya minimal business endpoints berikut:
 
 - `POST /legacy/auth/login`
 - `POST /legacy/auth/logout`
@@ -84,21 +106,21 @@ The legacy side should expose at least these business endpoints:
 
 ## PIN Verification Best Practice
 
-`transaction PIN` should generally be verified inside the financial transaction endpoints rather than through a separate pre-check endpoint.
+`transaction PIN` sebaiknya diverifikasi langsung di dalam `financial transaction endpoint`, bukan lewat `separate pre-check endpoint`.
 
 Recommended pattern:
 
 - `POST /legacy/transfers`
 - `POST /legacy/payments/qris`
 
-Reasons:
+Alasannya:
 
-- fewer network round trips
-- clearer audit trail per transaction
-- tighter coupling between authorization and execution
-- lower risk of detached PIN-verification state
+- lebih sedikit `network round trip`
+- `audit trail` per transaksi lebih jelas
+- proses authorization dan execution tetap menyatu
+- risiko state verifikasi PIN yang terpisah jadi lebih kecil
 
-An explicit `POST /legacy/auth/verify-transaction-pin` endpoint can exist if the architecture requires it, but it should not be the default for this project.
+Endpoint eksplisit seperti `POST /legacy/auth/verify-transaction-pin` boleh ada kalau arsitekturnya memang butuh, tapi sebaiknya bukan default untuk project ini.
 
 ## Example Login Response From Legacy
 
@@ -121,6 +143,6 @@ An explicit `POST /legacy/auth/verify-transaction-pin` endpoint can exist if the
 
 ## Notes
 
-- Client applications should not receive raw legacy tokens unless there is a deliberate architecture decision to allow that.
-- DANTE should treat any legacy session identifier as internal service data.
-- Invalid credentials, blocked accounts, and legacy unavailability should map to distinct DANTE-side error handling so operational diagnosis stays clear.
+- Client sebaiknya tidak menerima raw token dari legacy, kecuali memang ada keputusan arsitektur yang sengaja mengizinkan itu.
+- Semua `legacy session identifier` sebaiknya diperlakukan sebagai `internal service data` oleh DANTE.
+- Error seperti `invalid credentials`, blocked account, dan legacy unavailability sebaiknya dibedakan dengan jelas supaya diagnosis operasional lebih mudah.

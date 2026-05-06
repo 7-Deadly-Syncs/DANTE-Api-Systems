@@ -1,4 +1,3 @@
-GNU nano 7.2                                                                                                                      go.mod                                                                                                                               
 module github.com/7-Deadly-Syncs/DANTE-Api-Systems
 
 go 1.25.7

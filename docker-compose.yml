@@ -140,7 +140,7 @@ services:
       - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     networks:
-      - back-tier
+      - back-tier      
 
   jaeger:
     image: jaegertracing/all-in-one:1.58
@@ -151,7 +151,7 @@ services:
       - "4317:4317"
       - "4318:4318"
     networks:
-      - back-tier
+      - back-tier      
 
   grafana:
     image: grafana/grafana:11.1.0
@@ -169,7 +169,7 @@ services:
       - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
     networks:
-      - back-tier
+      - back-tier     
 
 networks:
   front-tier:

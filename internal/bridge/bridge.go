@@ -16,6 +16,7 @@ import (
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database"
 	dbsqlc "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database/sqlc"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/legacy"
+	ratelimit "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/middleware"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/cachemetrics"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/httpobs"
 	observabilitymetrics "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/metrics"
@@ -183,7 +184,17 @@ func Start() {
 	cacheClient := cache.NewClient(redisClient)
 	store := database.NewStore(db)
 	cacheStats := cachemetrics.NewInMemoryRecorder()
-	merchantSvc := merchantservice.NewService(cacheClient, store.Queries, legacy.NoopMerchantClient{}, cacheStats)
+
+	legacyMerchantClient := legacy.NewCircuitBreakingMerchantClient(
+		legacy.NoopMerchantClient{},
+		legacy.CircuitBreakerConfig{
+			FailureThreshold: 3,
+			SuccessThreshold: 1,
+			OpenTimeout:      5 * time.Second,
+		},
+	)
+
+	merchantSvc := merchantservice.NewService(cacheClient, store.Queries, legacyMerchantClient, cacheStats)
 	transactionStatusSvc := transactionservice.NewStatusService(cacheClient, store.Queries, cacheStats)
 	transactionDetailSvc := transactionservice.NewDetailService(store.Queries)
 	transactionHistorySvc := transactionservice.NewHistoryService(store.Queries)
@@ -205,6 +216,13 @@ func Start() {
 
 	router.Use(middleware.Logger)
 	router.Use(middleware.Recoverer)
+
+	// Rate limiting untuk melindungi public endpoints dari abuse.
+	// Menggunakan token bucket algorithm (golang.org/x/time/rate) dengan per-IP tracking.
+	// Default: 5 req/sec per IP dengan burst 10.
+	// Endpoint internal seperti /health, /metrics, /internal/* di-exclude dari rate limiting.
+	rateLimiter := ratelimit.NewRateLimiter(5.0, 10)
+	router.Use(rateLimiter.Handler())
 
 	router.Handle("/metrics", metricsHandler)
 

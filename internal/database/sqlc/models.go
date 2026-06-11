@@ -76,7 +76,7 @@ type Merchant struct {
 type Transaction struct {
 	ID                uuid.UUID      `json:"id"`
 	UserID            uuid.UUID      `json:"user_id"`
-	MerchantID        uuid.UUID      `json:"merchant_id"`
+	MerchantID        uuid.NullUUID  `json:"merchant_id"`
 	AccountID         uuid.UUID      `json:"account_id"`
 	Amount            int64          `json:"amount"`
 	Status            string         `json:"status"`

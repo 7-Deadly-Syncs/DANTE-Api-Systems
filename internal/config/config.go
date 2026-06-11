@@ -11,10 +11,11 @@ import (
 
 // Config contains the runtime configuration used by the service.
 type Config struct {
-	App      AppConfig
-	Redis    RedisConfig
-	RabbitMQ RabbitMQConfig
-	Database DatabaseConfig
+	App           AppConfig
+	Redis         RedisConfig
+	RabbitMQ      RabbitMQConfig
+	Database      DatabaseConfig
+	Legacy        LegacyConfig
 	Observability ObservabilityConfig
 }
 
@@ -60,15 +61,23 @@ type RedisConfig struct {
 
 // RabbitMQConfig contains RabbitMQ connection settings.
 type RabbitMQConfig struct {
-	URL         string
-	DialTimeout time.Duration
+	URL               string
+	DialTimeout       time.Duration
+	QRISPaymentsQueue string
+	TransfersQueue    string
+}
+
+// LegacyConfig contains SOAP legacy integration settings.
+type LegacyConfig struct {
+	BankServiceURL string
+	Timeout        time.Duration
 }
 
 // ObservabilityConfig contains metrics/tracing runtime settings.
 type ObservabilityConfig struct {
 	ServiceName      string
-	TracingEnabled  bool
-	JaegerEndpoint  string
+	TracingEnabled   bool
+	JaegerEndpoint   string
 	TraceSampleRatio float64
 }
 
@@ -96,8 +105,10 @@ func Load() Config {
 			ConnMaxLifetime: getenvDuration("REDIS_CONN_MAX_LIFETIME", 30*time.Minute),
 		},
 		RabbitMQ: RabbitMQConfig{
-			URL:         getenv("RABBITMQ_URL", ""),
-			DialTimeout: getenvDuration("RABBITMQ_DIAL_TIMEOUT", 3*time.Second),
+			URL:               getenv("RABBITMQ_URL", ""),
+			DialTimeout:       getenvDuration("RABBITMQ_DIAL_TIMEOUT", 3*time.Second),
+			QRISPaymentsQueue: getenv("RABBITMQ_QRIS_PAYMENTS_QUEUE", "dante.qris.payments"),
+			TransfersQueue:    getenv("RABBITMQ_TRANSFERS_QUEUE", "dante.transfers"),
 		},
 		Database: DatabaseConfig{
 			Host:            getenv("DB_HOST", "localhost"),
@@ -113,8 +124,12 @@ func Load() Config {
 			ConnMaxIdleTime: getenvDuration("DB_CONN_MAX_IDLE_TIME", 5*time.Minute),
 			ConnMaxLifetime: getenvDuration("DB_CONN_MAX_LIFETIME", 30*time.Minute),
 		},
+		Legacy: LegacyConfig{
+			BankServiceURL: getenv("LEGACY_BANKSERVICE_URL", ""),
+			Timeout:        getenvDuration("LEGACY_TIMEOUT", 5*time.Second),
+		},
 		Observability: ObservabilityConfig{
-			ServiceName:       getenv("OTEL_SERVICE_NAME", "dante-api-systems"),
+			ServiceName:      getenv("OTEL_SERVICE_NAME", "dante-api-systems"),
 			TracingEnabled:   getenvBool("TRACING_ENABLED", true),
 			JaegerEndpoint:   getenv("JAEGER_OTLP_ENDPOINT", "jaeger:4318"),
 			TraceSampleRatio: getenvFloat("TRACE_SAMPLE_RATIO", 1.0),
@@ -174,6 +189,11 @@ func (c RedisConfig) Address() string {
 	}
 
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
+}
+
+// Enabled reports whether the legacy SOAP integration is configured.
+func (c LegacyConfig) Enabled() bool {
+	return strings.TrimSpace(c.BankServiceURL) != ""
 }
 
 func getenv(key, fallback string) string {

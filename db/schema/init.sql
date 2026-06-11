@@ -26,7 +26,7 @@ CREATE TABLE accounts (
 CREATE TABLE transactions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id),
-    merchant_id UUID NOT NULL REFERENCES merchants(id),
+    merchant_id UUID REFERENCES merchants(id),
     account_id UUID NOT NULL REFERENCES accounts(id),
     amount BIGINT NOT NULL CHECK (amount > 0),
     status TEXT NOT NULL CHECK (

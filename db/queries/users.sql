@@ -37,3 +37,15 @@ SELECT *
 FROM accounts
 WHERE account_number = $1
 LIMIT 1;
+
+-- name: GetAccountByID :one
+SELECT *
+FROM accounts
+WHERE id = $1
+LIMIT 1;
+
+-- name: UpdateAccountBalance :one
+UPDATE accounts
+SET balance = $2
+WHERE id = $1
+RETURNING *;

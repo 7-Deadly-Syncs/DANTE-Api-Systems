@@ -13,10 +13,12 @@ import (
 
 type Querier interface {
 	CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error)
+	CreateLegacyCallLog(ctx context.Context, arg CreateLegacyCallLogParams) (LegacyCallLog, error)
 	CreateMerchant(ctx context.Context, arg CreateMerchantParams) (Merchant, error)
 	CreateTransaction(ctx context.Context, arg CreateTransactionParams) (Transaction, error)
 	CreateTransactionEvent(ctx context.Context, arg CreateTransactionEventParams) (TransactionEvent, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	GetAccountByID(ctx context.Context, id uuid.UUID) (Account, error)
 	GetAccountByNumber(ctx context.Context, accountNumber string) (Account, error)
 	GetMerchantByID(ctx context.Context, id uuid.UUID) (Merchant, error)
 	GetMerchantByQRISCode(ctx context.Context, qrisCode string) (Merchant, error)
@@ -25,8 +27,10 @@ type Querier interface {
 	GetTransactionStatusByID(ctx context.Context, id uuid.UUID) (GetTransactionStatusByIDRow, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByPhoneNumber(ctx context.Context, phoneNumber sql.NullString) (User, error)
+	ListLegacyCallLogsByTransactionID(ctx context.Context, transactionID uuid.NullUUID) ([]LegacyCallLog, error)
 	ListTransactionEventsByTransactionID(ctx context.Context, transactionID uuid.UUID) ([]TransactionEvent, error)
 	ListTransactionsByAccountID(ctx context.Context, arg ListTransactionsByAccountIDParams) ([]Transaction, error)
+	UpdateAccountBalance(ctx context.Context, arg UpdateAccountBalanceParams) (Account, error)
 	UpdateTransactionStatus(ctx context.Context, arg UpdateTransactionStatusParams) (Transaction, error)
 }
 

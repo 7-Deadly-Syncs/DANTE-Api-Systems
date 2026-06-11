@@ -12,6 +12,7 @@ const (
 	transactionStatusCachePrefix = "transaction_status:"
 	accountBalanceCachePrefix    = "account_balance:"
 	idempotencyCachePrefix       = "idempotency:"
+	sessionCachePrefix           = "session:"
 )
 
 const (
@@ -48,4 +49,9 @@ func AccountBalanceKey(accountID uuid.UUID) string {
 // IdempotencyKey returns the Redis key for future idempotency state caching.
 func IdempotencyKey(key string) string {
 	return idempotencyCachePrefix + key
+}
+
+// SessionKey returns the Redis key for DANTE-issued client sessions.
+func SessionKey(token string) string {
+	return sessionCachePrefix + token
 }

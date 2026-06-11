@@ -41,7 +41,7 @@ RETURNING id, user_id, merchant_id, account_id, amount, status, idempotency_key,
 
 type CreateTransactionParams struct {
 	UserID            uuid.UUID      `json:"user_id"`
-	MerchantID        uuid.UUID      `json:"merchant_id"`
+	MerchantID        uuid.NullUUID  `json:"merchant_id"`
 	AccountID         uuid.UUID      `json:"account_id"`
 	Amount            int64          `json:"amount"`
 	Status            string         `json:"status"`

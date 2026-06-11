@@ -22,7 +22,7 @@ type DetailQuerier interface {
 type DetailView struct {
 	ID                uuid.UUID
 	UserID            uuid.UUID
-	MerchantID        uuid.UUID
+	MerchantID        *uuid.UUID
 	AccountID         uuid.UUID
 	Amount            int64
 	Status            string
@@ -75,7 +75,6 @@ func (s *DetailService) GetDetail(ctx context.Context, transactionID uuid.UUID) 
 	view := &DetailView{
 		ID:             row.ID,
 		UserID:         row.UserID,
-		MerchantID:     row.MerchantID,
 		AccountID:      row.AccountID,
 		Amount:         row.Amount,
 		Status:         row.Status,
@@ -100,10 +99,17 @@ func (s *DetailService) GetDetail(ctx context.Context, transactionID uuid.UUID) 
 		view.ProcessedAt = &processedAt
 	}
 
+	if row.MerchantID.Valid {
+		merchantID := row.MerchantID.UUID
+		view.MerchantID = &merchantID
+	}
+
 	span.SetAttributes(
 		attribute.String("transaction.status", view.Status),
 		attribute.String("account.id", view.AccountID.String()),
-		attribute.String("merchant.id", view.MerchantID.String()),
 	)
+	if view.MerchantID != nil {
+		span.SetAttributes(attribute.String("merchant.id", view.MerchantID.String()))
+	}
 	return view, nil
 }

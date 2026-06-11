@@ -24,8 +24,8 @@ Status legend:
 - [x] PostgreSQL schema, goose migrations, and `sqlc` generation
 - [x] Cross-platform Go-based migration command (`cmd/migrate`)
 - [x] Redis client and cache package
-- [ ] RabbitMQ publisher / worker foundation
-- [ ] Legacy adapter implementation
+- [x] RabbitMQ publisher / worker foundation
+- [-] Legacy adapter implementation
 - [x] `/metrics` endpoint for Prometheus scraping
 
 ---
@@ -35,10 +35,10 @@ Status legend:
 - [x] PostgreSQL is the source of truth for transactions
 - [x] Redis is cache and transient state only
 - [x] Write flows must not call legacy inline from HTTP handlers
-- [ ] Client login session should be issued by DANTE after legacy credential validation
-- [ ] `username + password` is for login, while `transaction PIN` is only for financial transaction authorization
-- [ ] Worker is the only component allowed to execute payment calls to legacy
-- [ ] Legacy adapter must isolate all legacy API details from service logic
+- [x] Client login session should be issued by DANTE after legacy credential validation
+- [x] `username + password` is for login, while `transaction PIN` is only for financial transaction authorization
+- [x] Worker is the only component allowed to execute payment calls to legacy
+- [x] Legacy adapter must isolate all legacy API details from service logic
 - [ ] Keep `db/schema/init.sql` and `db/migrations/00001_init.sql` aligned until migrations are split further
 
 ---
@@ -64,11 +64,11 @@ Focus: Redis layer, read APIs, cache behavior, API/runtime polish, and database 
 - [x] Add Redis client/bootstrap package
 - [x] Define cache key naming and TTL policy
 - [x] Implement negative caching and stampede lock strategy
-- [-] Add service-layer packages for merchant, account, and transaction reads
+- [x] Add service-layer packages for merchant, account, and transaction reads
 - [x] Add `GET /ready`
 - [x] Add `GET /v1/merchants/:merchantId`
-- [ ] Add `GET /v1/accounts/:accountId` -- depends on legacy account profile contract
-- [ ] Add `GET /v1/accounts/:accountId/balance` -- wait for legacy
+- [x] Add `GET /v1/accounts/:accountId` 
+- [x] Add `GET /v1/accounts/:accountId/balance` 
 - [x] Add `GET /v1/transactions/:transactionId/status`
 - [x] Add `GET /v1/transactions/:transactionId`
 - [x] Add `GET /v1/accounts/:accountId/transactions`
@@ -79,12 +79,12 @@ Focus: Redis layer, read APIs, cache behavior, API/runtime polish, and database 
 
 - [x] Merchant cache TTL: long-lived
 - [x] Balance source model: cached from legacy, not DANTE-owned truth
-- [ ] Balance cache TTL: short-lived
+- [x] Balance cache TTL: short-lived
 - [x] Transaction status TTL: short/medium
-- [ ] Idempotency key TTL
+- [x] Idempotency key TTL
 - [x] Negative cache TTL for not-found merchant/account reads
-- [ ] Decide when legacy fallback is allowed per endpoint
-- [ ] Decide error contract when cache + DB miss and legacy is unavailable
+- [-] Decide when legacy fallback is allowed per endpoint
+- [-] Decide error contract when cache + DB miss and legacy is unavailable
 
 ### Database Performance Layer
 
@@ -108,28 +108,29 @@ Focus: payment flow design, worker/queue processing, retries, transaction-state 
 
 ### Payments, Queueing, and Transaction Lifecycle
 
-- [ ] Define login/auth contract backed by legacy credential validation
-- [ ] Define QRIS payment request/response contract
-- [ ] Define transfer request/response contract
-- [ ] Add `POST /v1/auth/login`
-- [ ] Add `POST /v1/auth/logout`
-- [ ] Add `POST /v1/payments/qris`
-- [ ] Add `POST /v1/transfers`
-- [ ] Require `Idempotency-Key` for payment writes
-- [ ] Add idempotency lookup and conflict behavior
-- [ ] Add transaction creation flow in PostgreSQL
-- [ ] Store initial transaction status as `PROCESSING`
-- [ ] Store fast transaction status in Redis
-- [ ] Add RabbitMQ enqueue/publish layer
-- [ ] DANTE issues client session/access token after successful legacy login
-- [ ] DANTE forwards `transaction PIN` only for financial transaction authorization
-- [ ] Add worker process for payment execution
-- [ ] Worker executes transfer calls through legacy adapter
-- [ ] Worker calls legacy through legacy adapter
-- [ ] Worker updates PostgreSQL final status
-- [ ] Worker updates Redis transaction status
-- [ ] Add balance cache invalidation after successful payment
-- [ ] Add balance cache invalidation after successful transfer
+- [x] Define login/auth contract backed by legacy credential validation
+- [x] Define QRIS payment request/response contract
+- [x] Define transfer request/response contract
+- [x] Add `POST /v1/auth/login`
+- [x] Add `POST /v1/auth/logout`
+- [x] Add `GET /v1/auth/session`
+- [x] Add `POST /v1/payments/qris`
+- [x] Add `POST /v1/transfers`
+- [x] Require `Idempotency-Key` for payment writes
+- [x] Add idempotency lookup and conflict behavior
+- [x] Add transaction creation flow in PostgreSQL
+- [x] Store initial transaction status as `PROCESSING`
+- [x] Store fast transaction status in Redis
+- [x] Add RabbitMQ enqueue/publish layer
+- [x] DANTE issues client session/access token after successful legacy login
+- [x] DANTE forwards `transaction PIN` only for financial transaction authorization
+- [x] Add worker process for payment execution
+- [x] Worker executes transfer calls through legacy adapter
+- [x] Worker calls legacy through legacy adapter
+- [x] Worker updates PostgreSQL final status
+- [x] Worker updates Redis transaction status
+- [x] Add balance cache invalidation after successful payment
+- [x] Add balance cache invalidation after successful transfer
 - [ ] Add async handling for non-critical side effects (logging / notification / audit-style tasks)
 - [ ] Add transaction state transitions and retries
 - [ ] Add queue visibility and operational metrics
@@ -139,22 +140,22 @@ Focus: payment flow design, worker/queue processing, retries, transaction-state 
 - [ ] Define allowed states: `INITIATED`, `PROCESSING`, `SUCCESS`, `FAILED`, `EXPIRED`
 - [ ] Define valid state transitions
 - [ ] Prevent invalid transition updates
-- [ ] Store state changes in `transaction_events`
-- [ ] Return clear status response for client polling
+- [x] Store state changes in `transaction_events`
+- [x] Return clear status response for client polling
 - [ ] Decide expiration behavior for long-running `PROCESSING` transactions
 
 ### Resilience Logic
 
-- [ ] Define login failure contract for invalid credentials, blocked account, and legacy unavailability
-- [ ] Add timeout policy for legacy calls
+- [-] Define login failure contract for invalid credentials, blocked account, and legacy unavailability
+- [x] Add timeout policy for legacy calls
 - [ ] Add worker retry strategy with exponential backoff
-- [ ] Add circuit breaker for degraded legacy calls
+- [-] Add circuit breaker for degraded legacy calls
 - [ ] Add load leveling behavior through worker concurrency limits
 - [ ] Decide fallback response when legacy is unavailable
 
 ### TIF Operational Endpoints
 
-- [ ] `GET /internal/queue/status`
+- [x] `GET /internal/queue/status`
 - [ ] `POST /internal/transactions/:transactionId/retry`
 
 ---
@@ -165,17 +166,17 @@ Focus: deployment/runtime stability, queue infrastructure support, network behav
 
 ### Infrastructure and Runtime Stability
 
-- [ ] RabbitMQ publisher / worker foundation
-- [ ] Legacy adapter implementation
-- [ ] Add legacy login adapter (`POST /legacy/auth/login`)
-- [ ] Add legacy logout adapter (`POST /legacy/auth/logout`)
-- [ ] Add legacy account profile adapter (`GET /legacy/accounts/{accountId}`)
-- [ ] Add legacy balance adapter (`GET /legacy/accounts/{accountId}/balance`)
-- [ ] Add legacy transfer adapter (`POST /legacy/transfers`)
-- [ ] Add legacy QRIS payment adapter (`POST /legacy/payments/qris`)
+- [x] RabbitMQ publisher / worker foundation
+- [-] Legacy adapter implementation
+- [x] Add legacy login adapter (`POST /legacy/auth/login`)
+- [x] Add legacy logout adapter (`POST /legacy/auth/logout`)
+- [x] Add legacy account profile adapter (`GET /legacy/accounts/{accountId}`)
+- [x] Add legacy balance adapter (`GET /legacy/accounts/{accountId}/balance`)
+- [x] Add legacy transfer adapter (`POST /legacy/transfers`)
+- [x] Add legacy QRIS payment adapter (`POST /legacy/payments/qris`)
 - [ ] Add RabbitMQ dead-letter queue
-- [ ] Add rate limiting for public endpoints
-- [ ] Log all legacy failures into PostgreSQL
+- [x] Add rate limiting for public endpoints
+- [-] Log all legacy failures into PostgreSQL
 
 ### Experiment & Simulation Layer
 
@@ -199,15 +200,15 @@ Focus: database evolution, observability, cross-cutting repository work, and tea
 - [x] Basic user, merchant, account, and transaction starter queries
 - [-] Merchant upsert/save-from-legacy query
 - [ ] Account profile read/update queries
-- [ ] Account balance read/update queries
+- [x] Account balance read/update queries
 - [x] Transaction creation query
 - [x] Transaction state update query
 - [x] Transaction detail/history queries
 - [ ] Session / login audit queries
-- [ ] Idempotency lookup query
-- [ ] Transaction event write/read queries
+- [x] Idempotency lookup query
+- [x] Transaction event write/read queries
 - [ ] Cache metrics write/read queries
-- [ ] Legacy call log write/read queries
+- [x] Legacy call log write/read queries
 
 ### Observability Layer
 

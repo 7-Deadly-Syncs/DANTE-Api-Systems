@@ -34,6 +34,26 @@ type TransactionStatusCacheEntry struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
+// AccountBalanceCacheEntry is the cached shape for account balance snapshots.
+type AccountBalanceCacheEntry struct {
+	AccountID          string    `json:"account_id"`
+	ReferenceAccountID string    `json:"reference_account_id"`
+	Balance            int64     `json:"balance"`
+	FetchedAt          time.Time `json:"fetched_at"`
+}
+
+// SessionEntry is the cached shape for DANTE-issued client sessions.
+type SessionEntry struct {
+	Token               string    `json:"token"`
+	CustomerID          string    `json:"customer_id"`
+	AccountID           string    `json:"account_id"`
+	AccountNumber       string    `json:"account_number"`
+	CustomerName        string    `json:"customer_name"`
+	LegacySessionID     string    `json:"legacy_session_id"`
+	LegacySessionExpiry time.Time `json:"legacy_session_expiry"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
 // Open creates a Redis client and verifies connectivity with a ping.
 func Open(ctx context.Context, cfg config.RedisConfig) (*redis.Client, error) {
 	_, span := tracing.StartClientSpan(ctx, "redis", "redis.connect",
@@ -227,6 +247,122 @@ func (c *Client) SetTransactionStatus(ctx context.Context, entry TransactionStat
 	if err := c.Redis.Set(ctx, TransactionStatusKey(uuid.MustParse(entry.ID)), payload, ttl).Err(); err != nil {
 		spanErr = err
 		return fmt.Errorf("set transaction status cache payload: %w", err)
+	}
+
+	return nil
+}
+
+// GetAccountBalance fetches cached account balance data by account ID.
+func (c *Client) GetAccountBalance(ctx context.Context, accountID uuid.UUID) (*AccountBalanceCacheEntry, error) {
+	ctx, span := tracing.StartClientSpan(ctx, "redis", "redis.get account_balance",
+		attribute.String("db.system", "redis"),
+		attribute.String("db.operation", "GET"),
+		attribute.String("cache.key_type", "account_balance"),
+		attribute.String("account.id", accountID.String()),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr, redis.Nil)
+	}()
+
+	payload, err := c.Redis.Get(ctx, AccountBalanceKey(accountID)).Bytes()
+	if err != nil {
+		spanErr = err
+		return nil, err
+	}
+
+	var entry AccountBalanceCacheEntry
+	if err := json.Unmarshal(payload, &entry); err != nil {
+		spanErr = err
+		return nil, fmt.Errorf("unmarshal account balance cache payload: %w", err)
+	}
+
+	span.SetAttributes(attribute.String("cache.result", "hit"))
+	return &entry, nil
+}
+
+// SetAccountBalance caches an account balance snapshot for the provided TTL.
+func (c *Client) SetAccountBalance(ctx context.Context, entry AccountBalanceCacheEntry, ttl time.Duration) error {
+	ctx, span := tracing.StartClientSpan(ctx, "redis", "redis.set account_balance",
+		attribute.String("db.system", "redis"),
+		attribute.String("db.operation", "SET"),
+		attribute.String("cache.key_type", "account_balance"),
+		attribute.String("account.id", entry.AccountID),
+		attribute.Int64("cache.ttl_ms", ttl.Milliseconds()),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr)
+	}()
+
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		spanErr = err
+		return fmt.Errorf("marshal account balance cache payload: %w", err)
+	}
+
+	if err := c.Redis.Set(ctx, AccountBalanceKey(uuid.MustParse(entry.AccountID)), payload, ttl).Err(); err != nil {
+		spanErr = err
+		return fmt.Errorf("set account balance cache payload: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteAccountBalance removes a cached account balance snapshot.
+func (c *Client) DeleteAccountBalance(ctx context.Context, accountID uuid.UUID) error {
+	ctx, span := tracing.StartClientSpan(ctx, "redis", "redis.del account_balance",
+		attribute.String("db.system", "redis"),
+		attribute.String("db.operation", "DEL"),
+		attribute.String("cache.key_type", "account_balance"),
+		attribute.String("account.id", accountID.String()),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr)
+	}()
+
+	if err := c.Redis.Del(ctx, AccountBalanceKey(accountID)).Err(); err != nil {
+		spanErr = err
+		return fmt.Errorf("delete account balance cache payload: %w", err)
+	}
+
+	return nil
+}
+
+// GetSession fetches a DANTE-issued session by token.
+func (c *Client) GetSession(ctx context.Context, token string) (*SessionEntry, error) {
+	payload, err := c.Redis.Get(ctx, SessionKey(token)).Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	var entry SessionEntry
+	if err := json.Unmarshal(payload, &entry); err != nil {
+		return nil, fmt.Errorf("unmarshal session cache payload: %w", err)
+	}
+
+	return &entry, nil
+}
+
+// SetSession stores a DANTE-issued session for the provided TTL.
+func (c *Client) SetSession(ctx context.Context, entry SessionEntry, ttl time.Duration) error {
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshal session cache payload: %w", err)
+	}
+
+	if err := c.Redis.Set(ctx, SessionKey(entry.Token), payload, ttl).Err(); err != nil {
+		return fmt.Errorf("set session cache payload: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteSession removes a DANTE-issued session.
+func (c *Client) DeleteSession(ctx context.Context, token string) error {
+	if err := c.Redis.Del(ctx, SessionKey(token)).Err(); err != nil {
+		return fmt.Errorf("delete session cache payload: %w", err)
 	}
 
 	return nil

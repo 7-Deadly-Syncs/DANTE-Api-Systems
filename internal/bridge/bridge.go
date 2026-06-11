@@ -22,7 +22,10 @@ import (
 	observabilitymetrics "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/metrics"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/queue"
+	accountservice "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/service/account"
+	authservice "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/service/auth"
 	merchantservice "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/service/merchant"
+	paymentservice "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/service/payment"
 	transactionservice "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/service/transaction"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -57,6 +60,72 @@ type infoResponse struct {
 		Version     string `json:"version" doc:"Application version string"`
 		Environment string `json:"environment" doc:"Current runtime environment"`
 	}
+}
+
+type authLoginRequest struct {
+	Body struct {
+		Username string `json:"username" format:"email" minLength:"3" doc:"Client login identifier passed to the legacy auth flow"`
+		Password string `json:"password" minLength:"1" doc:"Client password that DANTE validates through the legacy system"`
+	}
+}
+
+type authLogoutRequest struct {
+	Body struct {
+		Token string `json:"token" minLength:"1" doc:"DANTE-issued session token to invalidate"`
+	}
+}
+
+type authSessionHeaders struct {
+	Authorization string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
+}
+
+type paymentHeaders struct {
+	Authorization  string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
+	IdempotencyKey string `header:"Idempotency-Key" doc:"Client-supplied idempotency key used to deduplicate payment creation"`
+}
+
+type accountBalanceHeaders struct {
+	Authorization  string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
+	TransactionPIN string `header:"X-Transaction-PIN" doc:"Transaction PIN used to authorize a legacy balance refresh when cache is cold"`
+}
+
+type authLoginResponse struct {
+	Body authSessionDTO
+}
+
+type authLogoutResponse struct {
+	Body struct {
+		Message string `json:"message" doc:"Human-readable logout status message"`
+	}
+}
+
+type authSessionResponse struct {
+	Body authSessionStateDTO
+}
+
+type qrisPaymentRequest struct {
+	paymentHeaders
+	Body struct {
+		MerchantID string `json:"merchant_id" format:"uuid" doc:"Target merchant UUID for the QRIS payment"`
+		Amount     int64  `json:"amount" minimum:"1" doc:"Payment amount in the smallest currency unit"`
+	}
+}
+
+type transferRequest struct {
+	paymentHeaders
+	Body struct {
+		ToAccountNumber string `json:"to_account_number" minLength:"1" doc:"Destination account number for the transfer"`
+		Amount          int64  `json:"amount" minimum:"1" doc:"Transfer amount in the smallest currency unit"`
+		TransactionPIN  string `json:"transaction_pin" minLength:"1" doc:"Transaction PIN used only for financial authorization"`
+	}
+}
+
+type qrisPaymentResponse struct {
+	Body transactionDetailDTO
+}
+
+type transferResponse struct {
+	Body transactionDetailDTO
 }
 
 type merchantPathParams struct {
@@ -100,12 +169,60 @@ type systemStatusResponse struct {
 	Body systemStatusDTO
 }
 
+type accountProfileResponse struct {
+	Body accountProfileDTO
+}
+
+type accountBalanceResponse struct {
+	Body accountBalanceDTO
+}
+
+type queueStatusResponse struct {
+	Body queueStatusDTO
+}
+
 type merchantDTO struct {
 	ID        string `json:"id" doc:"Merchant UUID"`
 	Name      string `json:"name" doc:"Merchant display name"`
 	QRISCode  string `json:"qris_code" doc:"Merchant QRIS code"`
 	Category  string `json:"category,omitempty" doc:"Optional merchant category label"`
 	CreatedAt string `json:"created_at" doc:"Merchant record creation timestamp in RFC3339 format"`
+}
+
+type accountProfileDTO struct {
+	ID            string `json:"id" doc:"Local account UUID"`
+	UserID        string `json:"user_id" doc:"Local user UUID that owns the account"`
+	AccountNumber string `json:"account_number" doc:"Local account number mapped to the authenticated legacy account"`
+	CustomerID    string `json:"customer_id" doc:"Authoritative customer identifier returned by legacy"`
+	CustomerName  string `json:"customer_name" doc:"Customer display name returned by legacy"`
+	CreatedAt     string `json:"created_at" doc:"Account record creation timestamp in RFC3339 format"`
+}
+
+type accountBalanceDTO struct {
+	AccountID          string `json:"account_id" doc:"Local account UUID"`
+	ReferenceAccountID string `json:"reference_account_id" doc:"Legacy account reference used by the authoritative balance source"`
+	Balance            int64  `json:"balance" doc:"Balance amount in the smallest currency unit"`
+	Source             string `json:"source" doc:"Whether the balance came from Redis cache or a fresh legacy lookup"`
+	FetchedAt          string `json:"fetched_at" doc:"Timestamp when the current balance snapshot was fetched, in RFC3339 format"`
+}
+
+type authSessionDTO struct {
+	Token         string `json:"token" doc:"DANTE-issued bearer token for subsequent client requests"`
+	CustomerID    string `json:"customer_id" doc:"Authoritative customer identifier returned by legacy"`
+	AccountID     string `json:"account_id" doc:"Authoritative account identifier returned by legacy"`
+	AccountNumber string `json:"account_number" doc:"Legacy account number associated with the authenticated session"`
+	CustomerName  string `json:"customer_name" doc:"Customer display name returned by legacy"`
+	ExpiresAt     string `json:"expires_at" doc:"RFC3339 expiration timestamp for the DANTE-issued session token"`
+}
+
+type authSessionStateDTO struct {
+	Token         string `json:"token" doc:"Validated DANTE-issued bearer token"`
+	CustomerID    string `json:"customer_id" doc:"Authoritative customer identifier returned by legacy"`
+	AccountID     string `json:"account_id" doc:"Authoritative account identifier returned by legacy"`
+	AccountNumber string `json:"account_number" doc:"Legacy account number associated with the authenticated session"`
+	CustomerName  string `json:"customer_name" doc:"Customer display name returned by legacy"`
+	ExpiresAt     string `json:"expires_at" doc:"RFC3339 expiration timestamp for the DANTE-issued session token"`
+	CreatedAt     string `json:"created_at" doc:"RFC3339 timestamp when DANTE created the client session"`
 }
 
 type transactionStatusDTO struct {
@@ -119,7 +236,7 @@ type transactionStatusDTO struct {
 type transactionDetailDTO struct {
 	ID                string  `json:"id" doc:"Transaction UUID"`
 	UserID            string  `json:"user_id" doc:"User UUID associated with the transaction"`
-	MerchantID        string  `json:"merchant_id" doc:"Merchant UUID associated with the transaction"`
+	MerchantID        *string `json:"merchant_id,omitempty" doc:"Merchant UUID associated with the transaction when the transaction is merchant-backed"`
 	AccountID         string  `json:"account_id" doc:"Account UUID charged by the transaction"`
 	Amount            int64   `json:"amount" doc:"Transaction amount in smallest currency unit"`
 	Status            string  `json:"status" doc:"Current transaction lifecycle status"`
@@ -146,10 +263,37 @@ type systemStatusDTO struct {
 	Dependencies map[string]dependencyStatus `json:"dependencies" doc:"Per-dependency status details"`
 }
 
+type queueStatusDTO struct {
+	Status string            `json:"status" doc:"Overall queue connectivity state"`
+	Queues map[string]string `json:"queues" doc:"Configured application queues keyed by workflow name"`
+	Broker dependencyStatus  `json:"broker" doc:"RabbitMQ broker connectivity state"`
+}
+
 type dependencyStatus struct {
 	Status string `json:"status" doc:"Dependency state such as ok, error, or stub"`
 	Detail string `json:"detail,omitempty" doc:"Optional detail describing the current dependency state"`
 }
+
+const openAPIDescription = `DANTE is a middleware layer in front of a legacy banking system, designed to improve latency, resilience, and operational visibility for QRIS-style and real-time transaction workloads.
+
+### Current Scope
+
+- Read-side APIs for merchants, transaction status, transaction detail, and account transaction history
+- Redis-backed cache strategies for low-latency lookups and backend protection
+- PostgreSQL as the local source of truth for transaction data
+- Prometheus-friendly metrics and internal operational endpoints
+
+### Architecture Notes
+
+- Merchant reads follow the path: **Redis -> PostgreSQL -> Legacy**
+- Transaction status follows the path: **Redis -> PostgreSQL**
+- Transaction detail and account transaction history currently read from **PostgreSQL directly**
+- Redis is used for cache and short-lived coordination only; it is **not** the source of truth
+
+### Delivery Status
+
+This documentation reflects the current development build. QRIS and transfer intake, RabbitMQ publishing, and async worker execution are active. Richer retry behavior and the remaining legacy-backed account endpoints are still in progress.
+`
 
 func Start() {
 	cfg := config.Load()
@@ -185,7 +329,7 @@ func Start() {
 	cacheClient := cache.NewClient(redisClient)
 	store := database.NewStore(db)
 	cacheStats := cachemetrics.NewInMemoryRecorder()
-
+	legacyClient := legacy.NewClient(cfg.Legacy)
 	legacyMerchantClient := legacy.NewCircuitBreakingMerchantClient(
 		legacy.NoopMerchantClient{},
 		legacy.CircuitBreakerConfig{
@@ -194,8 +338,15 @@ func Start() {
 			OpenTimeout:      5 * time.Second,
 		},
 	)
-
+	qrisPublisher := queue.NewPublisher(cfg.RabbitMQ)
+	qrisConsumer := queue.NewConsumer(cfg.RabbitMQ)
+	authSvc := authservice.NewService(cacheClient, legacyClient)
+	accountSvc := accountservice.NewService(store.Queries, cacheClient, legacyClient)
 	merchantSvc := merchantservice.NewService(cacheClient, store.Queries, legacyMerchantClient, cacheStats)
+	qrisPaymentSvc := paymentservice.NewQRISService(store.Queries, cacheClient, qrisPublisher)
+	qrisWorker := paymentservice.NewQRISWorker(store.Queries, cacheClient, cacheClient, legacyClient)
+	transferSvc := paymentservice.NewTransferService(store.Queries, cacheClient, qrisPublisher)
+	transferWorker := paymentservice.NewTransferWorker(store.Queries, cacheClient, cacheClient, legacyClient)
 	transactionStatusSvc := transactionservice.NewStatusService(cacheClient, store.Queries, cacheStats)
 	transactionDetailSvc := transactionservice.NewDetailService(store.Queries)
 	transactionHistorySvc := transactionservice.NewHistoryService(store.Queries)
@@ -228,6 +379,46 @@ func Start() {
 	router.Handle("/metrics", metricsHandler)
 
 	apiConfig := huma.DefaultConfig("DANTE API Systems", "0.1.0")
+	apiConfig.Info.Description = openAPIDescription
+	apiConfig.Info.Contact = &huma.Contact{
+		Name: "DANTE API Team",
+	}
+	apiConfig.Servers = []*huma.Server{
+		{
+			URL:         "http://localhost:8080",
+			Description: "Local development gateway exposed through Nginx",
+		},
+	}
+	apiConfig.Tags = []*huma.Tag{
+		{
+			Name:        "System",
+			Description: "Liveness, readiness, service metadata, and platform-level runtime information.",
+		},
+		{
+			Name:        "Auth",
+			Description: "Client authentication endpoints where DANTE validates credentials through legacy and issues its own session token.",
+		},
+		{
+			Name:        "Merchants",
+			Description: "Merchant lookup endpoints optimized with Redis cache-aside, negative caching, and stampede protection.",
+		},
+		{
+			Name:        "Transactions",
+			Description: "Transaction status, detail, and history endpoints backed by PostgreSQL with selective Redis acceleration.",
+		},
+		{
+			Name:        "Accounts",
+			Description: "Account-facing transaction history endpoints. Balance and profile APIs remain planned pending legacy contract readiness.",
+		},
+		{
+			Name:        "Cache",
+			Description: "Internal cache diagnostics for Redis-backed read behavior and application-level cache metrics.",
+		},
+		{
+			Name:        "Internal",
+			Description: "Operational-only endpoints intended for diagnostics, dependency inspection, and support workflows.",
+		},
+	}
 	if cfg.App.IsDevelopment() {
 		apiConfig.OpenAPIPath = "/openapi"
 		apiConfig.DocsPath = "/docs"
@@ -238,6 +429,19 @@ func Start() {
 	}
 
 	api := humachi.New(router, apiConfig)
+
+	if cfg.RabbitMQ.URL != "" {
+		go func() {
+			if err := qrisConsumer.RunQRISPaymentWorker(ctx, qrisWorker); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("qris worker stopped: %v", err)
+			}
+		}()
+		go func() {
+			if err := qrisConsumer.RunTransferWorker(ctx, transferWorker); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("transfer worker stopped: %v", err)
+			}
+		}()
+	}
 
 	huma.Register(api, huma.Operation{
 		OperationID: "get-root",
@@ -327,6 +531,324 @@ func Start() {
 		resp.Body.Service = "dante-api-systems"
 		resp.Body.Version = cfg.App.Version
 		resp.Body.Environment = cfg.App.Environment
+		return resp, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "post-auth-login",
+		Method:      http.MethodPost,
+		Path:        "/v1/auth/login",
+		Summary:     "Authenticate a client session",
+		Description: "Validates username and password through the legacy bank service, then issues a DANTE-managed session token for subsequent client requests.",
+		Tags:        []string{"Auth"},
+	}, func(ctx context.Context, input *authLoginRequest) (*authLoginResponse, error) {
+		result, err := authSvc.Login(ctx, input.Body.Username, input.Body.Password)
+		if err != nil {
+			switch {
+			case errors.Is(err, authservice.ErrInvalidCredentials):
+				return nil, huma.Error401Unauthorized("invalid username or password")
+			case errors.Is(err, authservice.ErrExpiredSession):
+				return nil, huma.Error503ServiceUnavailable("legacy returned an already-expired session")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to authenticate against legacy", err)
+			}
+		}
+
+		resp := &authLoginResponse{}
+		resp.Body = mapAuthSessionResponse(*result)
+		return resp, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "post-auth-logout",
+		Method:      http.MethodPost,
+		Path:        "/v1/auth/logout",
+		Summary:     "Invalidate a client session",
+		Description: "Invalidates the DANTE-issued session token and the associated legacy session reference.",
+		Tags:        []string{"Auth"},
+	}, func(ctx context.Context, input *authLogoutRequest) (*authLogoutResponse, error) {
+		if err := authSvc.Logout(ctx, input.Body.Token); err != nil {
+			switch {
+			case errors.Is(err, authservice.ErrInvalidToken):
+				return nil, huma.Error401Unauthorized("invalid or expired token")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to logout session", err)
+			}
+		}
+
+		resp := &authLogoutResponse{}
+		resp.Body.Message = "logout successful"
+		return resp, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-auth-session",
+		Method:      http.MethodGet,
+		Path:        "/v1/auth/session",
+		Summary:     "Inspect the current client session",
+		Description: "Validates the DANTE-issued bearer token and returns the current authenticated session metadata.",
+		Tags:        []string{"Auth"},
+	}, func(ctx context.Context, input *authSessionHeaders) (*authSessionResponse, error) {
+		token, err := parseBearerToken(input.Authorization)
+		if err != nil {
+			return nil, huma.Error401Unauthorized("missing or invalid bearer token")
+		}
+
+		session, err := authSvc.GetSession(ctx, token)
+		if err != nil {
+			switch {
+			case errors.Is(err, authservice.ErrInvalidToken), errors.Is(err, authservice.ErrExpiredSession):
+				return nil, huma.Error401Unauthorized("invalid or expired token")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to validate session", err)
+			}
+		}
+
+		resp := &authSessionResponse{}
+		resp.Body = mapAuthSessionStateResponse(*session)
+		return resp, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "post-qris-payment",
+		Method:      http.MethodPost,
+		Path:        "/v1/payments/qris",
+		Summary:     "Create a QRIS payment transaction",
+		Description: "Validates the authenticated session, creates a durable local transaction in PROCESSING state, caches the fast status, and publishes async QRIS work into RabbitMQ.",
+		Tags:        []string{"Transactions", "Auth"},
+	}, func(ctx context.Context, input *qrisPaymentRequest) (*qrisPaymentResponse, error) {
+		token, err := parseBearerToken(input.Authorization)
+		if err != nil {
+			return nil, huma.Error401Unauthorized("missing or invalid bearer token")
+		}
+		if input.IdempotencyKey == "" {
+			return nil, huma.Error400BadRequest("missing Idempotency-Key header")
+		}
+
+		session, err := authSvc.GetSession(ctx, token)
+		if err != nil {
+			switch {
+			case errors.Is(err, authservice.ErrInvalidToken), errors.Is(err, authservice.ErrExpiredSession):
+				return nil, huma.Error401Unauthorized("invalid or expired token")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to validate session", err)
+			}
+		}
+
+		merchantID, err := uuid.Parse(input.Body.MerchantID)
+		if err != nil {
+			return nil, huma.Error400BadRequest("invalid merchant id", err)
+		}
+
+		result, err := qrisPaymentSvc.CreateTransaction(ctx, paymentservice.QRISRequest{
+			Session:        *session,
+			MerchantID:     merchantID,
+			Amount:         input.Body.Amount,
+			IdempotencyKey: input.IdempotencyKey,
+		})
+		if err != nil {
+			switch {
+			case errors.Is(err, paymentservice.ErrIdempotencyConflict):
+				return nil, huma.Error409Conflict("idempotency key already belongs to a different payment request")
+			case errors.Is(err, paymentservice.ErrAccountNotProvisioned):
+				return nil, huma.Error403Forbidden("authenticated account is not provisioned in dante")
+			case errors.Is(err, paymentservice.ErrMerchantNotFound):
+				return nil, huma.Error404NotFound("merchant not found")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to accept qris payment", err)
+			}
+		}
+
+		resp := &qrisPaymentResponse{}
+		resp.Body = mapTransactionDetailResponse(transactionservice.DetailView{
+			ID:             result.Transaction.ID,
+			UserID:         result.Transaction.UserID,
+			AccountID:      result.Transaction.AccountID,
+			Amount:         result.Transaction.Amount,
+			Status:         result.Transaction.Status,
+			IdempotencyKey: result.Transaction.IdempotencyKey,
+			RequestedAt:    result.Transaction.RequestedAt,
+			CreatedAt:      result.Transaction.CreatedAt,
+			UpdatedAt:      result.Transaction.UpdatedAt,
+		})
+		if result.Transaction.MerchantID.Valid {
+			merchantID := result.Transaction.MerchantID.UUID
+			resp.Body.MerchantID = stringPtr(merchantID.String())
+		}
+		return resp, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "post-transfer",
+		Method:      http.MethodPost,
+		Path:        "/v1/transfers",
+		Summary:     "Create a transfer transaction",
+		Description: "Validates the authenticated session, requires a transaction PIN for financial authorization, creates a durable local transfer transaction in PROCESSING state, caches the fast status, and publishes async transfer work into RabbitMQ.",
+		Tags:        []string{"Transactions", "Auth", "Accounts"},
+	}, func(ctx context.Context, input *transferRequest) (*transferResponse, error) {
+		token, err := parseBearerToken(input.Authorization)
+		if err != nil {
+			return nil, huma.Error401Unauthorized("missing or invalid bearer token")
+		}
+		if input.IdempotencyKey == "" {
+			return nil, huma.Error400BadRequest("missing Idempotency-Key header")
+		}
+		if input.Body.TransactionPIN == "" {
+			return nil, huma.Error400BadRequest("missing transaction_pin")
+		}
+
+		session, err := authSvc.GetSession(ctx, token)
+		if err != nil {
+			switch {
+			case errors.Is(err, authservice.ErrInvalidToken), errors.Is(err, authservice.ErrExpiredSession):
+				return nil, huma.Error401Unauthorized("invalid or expired token")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to validate session", err)
+			}
+		}
+
+		result, err := transferSvc.CreateTransaction(ctx, paymentservice.TransferRequest{
+			Session:         *session,
+			ToAccountNumber: input.Body.ToAccountNumber,
+			Amount:          input.Body.Amount,
+			TransactionPIN:  input.Body.TransactionPIN,
+			IdempotencyKey:  input.IdempotencyKey,
+		})
+		if err != nil {
+			switch {
+			case errors.Is(err, paymentservice.ErrIdempotencyConflict):
+				return nil, huma.Error409Conflict("idempotency key already belongs to a different transfer request")
+			case errors.Is(err, paymentservice.ErrAccountNotProvisioned):
+				return nil, huma.Error403Forbidden("authenticated account is not provisioned in dante")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to accept transfer", err)
+			}
+		}
+
+		resp := &transferResponse{}
+		resp.Body = mapTransactionDetailResponse(transactionservice.DetailView{
+			ID:             result.Transaction.ID,
+			UserID:         result.Transaction.UserID,
+			AccountID:      result.Transaction.AccountID,
+			Amount:         result.Transaction.Amount,
+			Status:         result.Transaction.Status,
+			IdempotencyKey: result.Transaction.IdempotencyKey,
+			RequestedAt:    result.Transaction.RequestedAt,
+			CreatedAt:      result.Transaction.CreatedAt,
+			UpdatedAt:      result.Transaction.UpdatedAt,
+		})
+		return resp, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-account-profile",
+		Method:      http.MethodGet,
+		Path:        "/v1/accounts/{accountId}",
+		Summary:     "Get account profile",
+		Description: "Returns the authenticated account profile for the requested local account ID using the DANTE session plus the local account mapping.",
+		Tags:        []string{"Accounts", "Auth"},
+	}, func(ctx context.Context, input *struct {
+		accountPathParams
+		authSessionHeaders
+	}) (*accountProfileResponse, error) {
+		token, err := parseBearerToken(input.Authorization)
+		if err != nil {
+			return nil, huma.Error401Unauthorized("missing or invalid bearer token")
+		}
+
+		session, err := authSvc.GetSession(ctx, token)
+		if err != nil {
+			switch {
+			case errors.Is(err, authservice.ErrInvalidToken), errors.Is(err, authservice.ErrExpiredSession):
+				return nil, huma.Error401Unauthorized("invalid or expired token")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to validate session", err)
+			}
+		}
+
+		accountID, err := uuid.Parse(input.AccountID)
+		if err != nil {
+			return nil, huma.Error400BadRequest("invalid account id", err)
+		}
+
+		profile, err := accountSvc.GetProfile(ctx, accountID, *session)
+		if err != nil {
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+				return nil, huma.Error404NotFound("account not found")
+			case errors.Is(err, accountservice.ErrAccountAccessDenied):
+				return nil, huma.Error403Forbidden("requested account does not belong to the authenticated session")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to fetch account profile", err)
+			}
+		}
+
+		resp := &accountProfileResponse{}
+		resp.Body = accountProfileDTO{
+			ID:            profile.ID.String(),
+			UserID:        profile.UserID.String(),
+			AccountNumber: profile.AccountNumber,
+			CustomerID:    profile.CustomerID,
+			CustomerName:  profile.CustomerName,
+			CreatedAt:     profile.CreatedAt.UTC().Format(time.RFC3339),
+		}
+		return resp, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-account-balance",
+		Method:      http.MethodGet,
+		Path:        "/v1/accounts/{accountId}/balance",
+		Summary:     "Get account balance",
+		Description: "Returns a cached balance snapshot when available, otherwise refreshes the balance from legacy using the authenticated session plus the transaction PIN header.",
+		Tags:        []string{"Accounts", "Auth"},
+	}, func(ctx context.Context, input *struct {
+		accountPathParams
+		accountBalanceHeaders
+	}) (*accountBalanceResponse, error) {
+		token, err := parseBearerToken(input.Authorization)
+		if err != nil {
+			return nil, huma.Error401Unauthorized("missing or invalid bearer token")
+		}
+		if input.TransactionPIN == "" {
+			return nil, huma.Error400BadRequest("missing X-Transaction-PIN header")
+		}
+
+		session, err := authSvc.GetSession(ctx, token)
+		if err != nil {
+			switch {
+			case errors.Is(err, authservice.ErrInvalidToken), errors.Is(err, authservice.ErrExpiredSession):
+				return nil, huma.Error401Unauthorized("invalid or expired token")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to validate session", err)
+			}
+		}
+
+		accountID, err := uuid.Parse(input.AccountID)
+		if err != nil {
+			return nil, huma.Error400BadRequest("invalid account id", err)
+		}
+
+		balance, err := accountSvc.GetBalance(ctx, accountID, *session, input.TransactionPIN)
+		if err != nil {
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+				return nil, huma.Error404NotFound("account not found")
+			case errors.Is(err, accountservice.ErrAccountAccessDenied):
+				return nil, huma.Error403Forbidden("requested account does not belong to the authenticated session")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to fetch account balance", err)
+			}
+		}
+
+		resp := &accountBalanceResponse{}
+		resp.Body = accountBalanceDTO{
+			AccountID:          balance.AccountID.String(),
+			ReferenceAccountID: balance.ReferenceAccountID,
+			Balance:            balance.Balance,
+			Source:             balance.Source,
+			FetchedAt:          balance.FetchedAt.UTC().Format(time.RFC3339),
+		}
 		return resp, nil
 	})
 
@@ -481,7 +1003,7 @@ func Start() {
 			"database": {Status: "ok"},
 			"redis":    {Status: "ok"},
 			"rabbitmq": {Status: "ok"},
-			"legacy":   {Status: "stub", Detail: "legacy adapter is not implemented yet"},
+			"legacy":   legacyDependencyStatus(checkCtx, legacyClient),
 		}
 
 		dbCheckCtx, dbCheckSpan := tracing.StartClientSpan(checkCtx, "postgres", "postgres.system_status",
@@ -514,7 +1036,7 @@ func Start() {
 		resp.Body.Dependencies = dependencies
 		resp.Body.Status = "ok"
 
-		for _, name := range []string{"database", "redis", "rabbitmq"} {
+		for _, name := range []string{"database", "redis", "rabbitmq", "legacy"} {
 			if dependencies[name].Status != "ok" {
 				resp.Body.Status = "degraded"
 				break
@@ -523,6 +1045,47 @@ func Start() {
 
 		if resp.Body.Status != "ok" {
 			return nil, huma.Error503ServiceUnavailable("one or more system dependencies are unavailable")
+		}
+
+		return resp, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-internal-queue-status",
+		Method:      http.MethodGet,
+		Path:        "/internal/queue/status",
+		Summary:     "Get internal queue status",
+		Description: "Returns operational queue configuration and RabbitMQ broker connectivity for async transaction intake.",
+		Tags:        []string{"Internal"},
+	}, func(ctx context.Context, input *struct{}) (*queueStatusResponse, error) {
+		checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+
+		brokerStatus := dependencyStatus{Status: "ok"}
+		if err := queue.CheckRabbitMQ(checkCtx, cfg.RabbitMQ); err != nil {
+			brokerStatus = dependencyStatus{Status: "error", Detail: err.Error()}
+		}
+
+		queueName := cfg.RabbitMQ.QRISPaymentsQueue
+		if queueName == "" {
+			queueName = "dante.qris.payments"
+		}
+
+		resp := &queueStatusResponse{}
+		resp.Body.Queues = map[string]string{
+			"qris_payments": queueName,
+			"transfers": func() string {
+				if cfg.RabbitMQ.TransfersQueue != "" {
+					return cfg.RabbitMQ.TransfersQueue
+				}
+				return "dante.transfers"
+			}(),
+		}
+		resp.Body.Broker = brokerStatus
+		resp.Body.Status = "ok"
+		if brokerStatus.Status != "ok" {
+			resp.Body.Status = "degraded"
+			return nil, huma.Error503ServiceUnavailable("rabbitmq broker is unavailable")
 		}
 
 		return resp, nil
@@ -546,6 +1109,59 @@ func mapMerchantResponse(merchant dbsqlc.Merchant) merchantDTO {
 	}
 }
 
+func mapAuthSessionResponse(session authservice.LoginResponse) authSessionDTO {
+	return authSessionDTO{
+		Token:         session.Token,
+		CustomerID:    session.CustomerID,
+		AccountID:     session.AccountID,
+		AccountNumber: session.AccountNumber,
+		CustomerName:  session.CustomerName,
+		ExpiresAt:     session.ExpiresAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func mapAuthSessionStateResponse(session authservice.SessionView) authSessionStateDTO {
+	return authSessionStateDTO{
+		Token:         session.Token,
+		CustomerID:    session.CustomerID,
+		AccountID:     session.AccountID,
+		AccountNumber: session.AccountNumber,
+		CustomerName:  session.CustomerName,
+		ExpiresAt:     session.ExpiresAt.UTC().Format(time.RFC3339),
+		CreatedAt:     session.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func legacyDependencyStatus(ctx context.Context, client *legacy.Client) dependencyStatus {
+	if client == nil || client.Endpoint() == "" {
+		return dependencyStatus{Status: "stub", Detail: "legacy adapter is not configured"}
+	}
+
+	if err := client.Ping(ctx); err != nil {
+		return dependencyStatus{Status: "error", Detail: err.Error()}
+	}
+
+	return dependencyStatus{
+		Status: "ok",
+		Detail: client.Endpoint(),
+	}
+}
+
+func parseBearerToken(header string) (string, error) {
+	const prefix = "Bearer "
+
+	if len(header) <= len(prefix) || header[:len(prefix)] != prefix {
+		return "", errors.New("invalid authorization header")
+	}
+
+	token := header[len(prefix):]
+	if token == "" {
+		return "", errors.New("empty bearer token")
+	}
+
+	return token, nil
+}
+
 func mapTransactionStatusResponse(status transactionservice.StatusView) transactionStatusDTO {
 	resp := transactionStatusDTO{
 		ID:          status.ID.String(),
@@ -566,7 +1182,6 @@ func mapTransactionDetailResponse(detail transactionservice.DetailView) transact
 	resp := transactionDetailDTO{
 		ID:             detail.ID.String(),
 		UserID:         detail.UserID.String(),
-		MerchantID:     detail.MerchantID.String(),
 		AccountID:      detail.AccountID.String(),
 		Amount:         detail.Amount,
 		Status:         detail.Status,
@@ -580,6 +1195,10 @@ func mapTransactionDetailResponse(detail transactionservice.DetailView) transact
 		resp.LegacyReferenceID = detail.LegacyReferenceID
 	}
 
+	if detail.MerchantID != nil {
+		resp.MerchantID = stringPtr(detail.MerchantID.String())
+	}
+
 	if detail.FailureReason != nil {
 		resp.FailureReason = detail.FailureReason
 	}
@@ -590,4 +1209,8 @@ func mapTransactionDetailResponse(detail transactionservice.DetailView) transact
 	}
 
 	return resp
+}
+
+func stringPtr(value string) *string {
+	return &value
 }

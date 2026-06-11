@@ -131,7 +131,6 @@ func mapTransactionRow(row dbsqlc.Transaction) DetailView {
 	view := DetailView{
 		ID:             row.ID,
 		UserID:         row.UserID,
-		MerchantID:     row.MerchantID,
 		AccountID:      row.AccountID,
 		Amount:         row.Amount,
 		Status:         row.Status,
@@ -154,6 +153,11 @@ func mapTransactionRow(row dbsqlc.Transaction) DetailView {
 	if row.ProcessedAt.Valid {
 		processedAt := row.ProcessedAt.Time
 		view.ProcessedAt = &processedAt
+	}
+
+	if row.MerchantID.Valid {
+		merchantID := row.MerchantID.UUID
+		view.MerchantID = &merchantID
 	}
 
 	return view

@@ -8,7 +8,9 @@ import (
 	"time"
 
 	dbsqlc "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database/sqlc"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // CircuitBreakerState represents the current state of the circuit breaker.
@@ -166,7 +168,27 @@ func NewCircuitBreakingMerchantClient(inner MerchantReader, cfg CircuitBreakerCo
 
 // GetMerchant calls the wrapped legacy reader through the circuit breaker.
 func (c *CircuitBreakingMerchantClient) GetMerchant(ctx context.Context, merchantID uuid.UUID) (*dbsqlc.Merchant, error) {
-	return ExecuteWithValue(c.breaker, ctx, func(ctx context.Context) (*dbsqlc.Merchant, error) {
+	ctx, span := tracing.StartInternalSpan(ctx, "legacy.circuitbreaker", "legacy.circuit_breaker merchant",
+		attribute.String("merchant.id", merchantID.String()),
+		attribute.String("legacy.circuit_state", c.breaker.State().String()),
+	)
+	var spanErr error
+	defer func() {
+		span.SetAttributes(attribute.String("legacy.circuit_state_after", c.breaker.State().String()))
+		tracing.EndSpan(span, spanErr, ErrNotFound)
+	}()
+
+	merchant, err := ExecuteWithValue(c.breaker, ctx, func(ctx context.Context) (*dbsqlc.Merchant, error) {
 		return c.inner.GetMerchant(ctx, merchantID)
 	})
+	spanErr = err
+	return merchant, err
+}
+
+// State reports the current circuit breaker state.
+func (cb *CircuitBreaker) State() CircuitBreakerState {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	return cb.state
 }

@@ -9,7 +9,9 @@ import (
 	"time"
 
 	dbsqlc "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database/sqlc"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -52,6 +54,16 @@ func NewHistoryService(repo HistoryQuerier) *HistoryService {
 
 // ListByAccount returns a cursor-paginated page of transactions for an account.
 func (s *HistoryService) ListByAccount(ctx context.Context, params HistoryParams) (*HistoryPage, error) {
+	ctx, span := tracing.StartInternalSpan(ctx, "service.transaction", "transaction.history.list",
+		attribute.String("account.id", params.AccountID.String()),
+		attribute.Int("transaction.requested_limit", params.Limit),
+		attribute.Bool("transaction.cursor_present", strings.TrimSpace(params.Cursor) != ""),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr)
+	}()
+
 	limit := params.Limit
 	if limit <= 0 {
 		limit = defaultHistoryLimit
@@ -66,19 +78,30 @@ func (s *HistoryService) ListByAccount(ctx context.Context, params HistoryParams
 	if strings.TrimSpace(params.Cursor) != "" {
 		cursor, err := decodeHistoryCursor(params.Cursor)
 		if err != nil {
+			spanErr = err
 			return nil, fmt.Errorf("decode history cursor: %w", err)
 		}
 		cursorCreatedAt = cursor.CreatedAt
 		cursorID = cursor.ID
 	}
+	span.SetAttributes(attribute.Int("transaction.effective_limit", limit))
 
-	rows, err := s.repo.ListTransactionsByAccountID(ctx, dbsqlc.ListTransactionsByAccountIDParams{
+	dbCtx, dbSpan := tracing.StartClientSpan(ctx, "postgres", "postgres.list transactions_by_account",
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", "SELECT"),
+		attribute.String("db.sql.table", "transactions"),
+		attribute.String("account.id", params.AccountID.String()),
+		attribute.Int("transaction.limit", limit),
+	)
+	rows, err := s.repo.ListTransactionsByAccountID(dbCtx, dbsqlc.ListTransactionsByAccountIDParams{
 		AccountID: params.AccountID,
 		Column2:   cursorCreatedAt,
 		ID:        cursorID,
 		Limit:     int32(limit),
 	})
+	tracing.EndSpan(dbSpan, err)
 	if err != nil {
+		spanErr = err
 		return nil, fmt.Errorf("read account transaction history from database: %w", err)
 	}
 
@@ -96,6 +119,10 @@ func (s *HistoryService) ListByAccount(ctx context.Context, params HistoryParams
 		})
 		page.NextCursor = &nextCursor
 	}
+	span.SetAttributes(
+		attribute.Int("transaction.result_count", len(items)),
+		attribute.Bool("transaction.next_cursor_present", page.NextCursor != nil),
+	)
 
 	return page, nil
 }

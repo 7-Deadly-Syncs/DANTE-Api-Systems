@@ -148,7 +148,6 @@ services:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
       - "16686:16686"
-      - "4317:4317"
       - "4318:4318"
     networks:
       - back-tier      
@@ -167,7 +166,7 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./configs/grafana/dashboards:/etc/grafana/dashboards:ro
     networks:
       - back-tier     
 

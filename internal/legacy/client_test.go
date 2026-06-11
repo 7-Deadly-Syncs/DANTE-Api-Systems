@@ -103,6 +103,59 @@ func TestLoginParsesSessionAndExpiry(t *testing.T) {
 	}
 }
 
+func TestRegisterParsesIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("SOAPAction"); got != "register" {
+			t.Fatalf("unexpected SOAPAction: %s", got)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		requestXML := string(body)
+		if !strings.Contains(requestXML, `<ns:register>`) {
+			t.Fatalf("expected register operation, got %s", requestXML)
+		}
+		if !strings.Contains(requestXML, `<ns:args1>john@example.com</ns:args1>`) {
+			t.Fatalf("expected email arg, got %s", requestXML)
+		}
+
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <ns:registerResponse xmlns:ns="http://BankService.services.axis2">
+      <ns:return>OK|CUST123|ACC987654|2623860486223779</ns:return>
+    </ns:registerResponse>
+  </soapenv:Body>
+</soapenv:Envelope>`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		endpoint:   server.URL,
+		httpClient: server.Client(),
+	}
+
+	result, err := client.Register(context.Background(), "John Doe", "john@example.com", "secret", "123456")
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	if result.CustomerID != "CUST123" {
+		t.Fatalf("unexpected customer id: %s", result.CustomerID)
+	}
+	if result.AccountID != "ACC987654" {
+		t.Fatalf("unexpected account id: %s", result.AccountID)
+	}
+	if result.AccountNumber != "2623860486223779" {
+		t.Fatalf("unexpected account number: %s", result.AccountNumber)
+	}
+}
+
 func TestPingUsesWsdl(t *testing.T) {
 	t.Parallel()
 

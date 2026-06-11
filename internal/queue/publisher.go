@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/config"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -43,12 +44,7 @@ func NewPublisher(cfg config.RabbitMQConfig) *Publisher {
 
 // PublishQRISPayment publishes a QRIS payment message into the configured queue.
 func (p *Publisher) PublishQRISPayment(ctx context.Context, msg QRISPaymentMessage) error {
-	queueName := p.cfg.QRISPaymentsQueue
-	if queueName == "" {
-		queueName = "dante.qris.payments"
-	}
-
-	if err := p.publishJSON(ctx, queueName, msg); err != nil {
+	if err := p.publishJSON(ctx, namesForQueue(qrisQueueName(p.cfg)).Primary, msg); err != nil {
 		return fmt.Errorf("publish qris payment message: %w", err)
 	}
 
@@ -57,12 +53,7 @@ func (p *Publisher) PublishQRISPayment(ctx context.Context, msg QRISPaymentMessa
 
 // PublishTransfer publishes a transfer message into the configured queue.
 func (p *Publisher) PublishTransfer(ctx context.Context, msg TransferMessage) error {
-	queueName := p.cfg.TransfersQueue
-	if queueName == "" {
-		queueName = "dante.transfers"
-	}
-
-	if err := p.publishJSON(ctx, queueName, msg); err != nil {
+	if err := p.publishJSON(ctx, namesForQueue(transfersQueueName(p.cfg)).Primary, msg); err != nil {
 		return fmt.Errorf("publish transfer message: %w", err)
 	}
 
@@ -95,21 +86,19 @@ func (p *Publisher) publishJSON(ctx context.Context, queueName string, msg any) 
 	}
 	defer ch.Close()
 
-	_, err = ch.QueueDeclare(
-		queueName,
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		return fmt.Errorf("declare rabbitmq queue: %w", err)
+	if err := declareQueueTopology(ch, namesForQueue(queueName)); err != nil {
+		return fmt.Errorf("declare rabbitmq queue topology: %w", err)
 	}
 
+	now := time.Now().UTC()
 	if err := ch.PublishWithContext(ctx, "", queueName, false, false, amqp.Publishing{
 		ContentType: "application/json",
 		Body:        body,
+		Timestamp:   now,
+		Headers: amqp.Table{
+			headerRetryCount:      int32(0),
+			headerFirstEnqueuedAt: now.Format(time.RFC3339Nano),
+		},
 	}); err != nil {
 		return fmt.Errorf("publish queue message: %w", err)
 	}

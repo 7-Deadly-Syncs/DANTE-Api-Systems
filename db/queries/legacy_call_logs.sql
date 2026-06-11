@@ -23,3 +23,13 @@ SELECT *
 FROM legacy_call_logs
 WHERE transaction_id = $1
 ORDER BY created_at ASC;
+
+-- name: GetLegacyCallMetrics :many
+SELECT
+    endpoint,
+    success,
+    COUNT(*)::bigint AS calls_total,
+    COALESCE(AVG(latency_ms), 0)::bigint AS avg_latency_ms
+FROM legacy_call_logs
+GROUP BY endpoint, success
+ORDER BY endpoint, success;

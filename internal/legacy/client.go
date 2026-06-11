@@ -41,6 +41,13 @@ type BankDetails struct {
 	Name string
 }
 
+// RegisterResult contains the authoritative registration result returned by the legacy system.
+type RegisterResult struct {
+	CustomerID    string
+	AccountID     string
+	AccountNumber string
+}
+
 // LoginResult contains the authoritative login result returned by the legacy system.
 type LoginResult struct {
 	CustomerID       string
@@ -143,6 +150,23 @@ func (c *Client) GetBankDetails(ctx context.Context, email, password string) (*B
 		Type: parts[1],
 		Code: parts[2],
 		Name: parts[3],
+	}, nil
+}
+
+// Register creates a new customer account in the legacy system.
+func (c *Client) Register(ctx context.Context, name, email, password, pin string) (*RegisterResult, error) {
+	parts, err := c.callAndRequireOK(ctx, "register", name, email, password, pin)
+	if err != nil {
+		return nil, err
+	}
+	if len(parts) < 4 {
+		return nil, fmt.Errorf("legacy register returned incomplete response: %q", strings.Join(parts, "|"))
+	}
+
+	return &RegisterResult{
+		CustomerID:    parts[1],
+		AccountID:     parts[2],
+		AccountNumber: parts[3],
 	}, nil
 }
 
@@ -463,4 +487,14 @@ func IsInvalidSession(err error) bool {
 	}
 
 	return strings.Contains(strings.ToUpper(opErr.Response), "INVALID_SESSION")
+}
+
+// IsEmailExists reports whether an error represents a duplicate legacy registration email.
+func IsEmailExists(err error) bool {
+	opErr := new(OperationError)
+	if !errors.As(err, &opErr) {
+		return false
+	}
+
+	return strings.Contains(strings.ToUpper(opErr.Response), "EMAIL_EXISTS")
 }

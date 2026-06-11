@@ -65,6 +65,11 @@ type RabbitMQConfig struct {
 	DialTimeout       time.Duration
 	QRISPaymentsQueue string
 	TransfersQueue    string
+	MaxRetryAttempts  int
+	RetryBaseDelay    time.Duration
+	QRISWorkers       int
+	TransferWorkers   int
+	PrefetchCount     int
 }
 
 // LegacyConfig contains SOAP legacy integration settings.
@@ -109,6 +114,11 @@ func Load() Config {
 			DialTimeout:       getenvDuration("RABBITMQ_DIAL_TIMEOUT", 3*time.Second),
 			QRISPaymentsQueue: getenv("RABBITMQ_QRIS_PAYMENTS_QUEUE", "dante.qris.payments"),
 			TransfersQueue:    getenv("RABBITMQ_TRANSFERS_QUEUE", "dante.transfers"),
+			MaxRetryAttempts:  getenvInt("RABBITMQ_MAX_RETRY_ATTEMPTS", 3),
+			RetryBaseDelay:    getenvDuration("RABBITMQ_RETRY_BASE_DELAY", 2*time.Second),
+			QRISWorkers:       getenvInt("RABBITMQ_QRIS_WORKERS", 1),
+			TransferWorkers:   getenvInt("RABBITMQ_TRANSFER_WORKERS", 1),
+			PrefetchCount:     getenvInt("RABBITMQ_PREFETCH_COUNT", 1),
 		},
 		Database: DatabaseConfig{
 			Host:            getenv("DB_HOST", "localhost"),

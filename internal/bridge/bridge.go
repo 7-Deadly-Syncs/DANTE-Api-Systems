@@ -69,6 +69,15 @@ type authLoginRequest struct {
 	}
 }
 
+type authRegisterRequest struct {
+	Body struct {
+		Name     string `json:"name" minLength:"1" doc:"Customer display name to create in the legacy banking system"`
+		Email    string `json:"email" format:"email" minLength:"3" doc:"Customer email used as the login identifier"`
+		Password string `json:"password" minLength:"1" doc:"Customer password that legacy stores as the login secret"`
+		PIN      string `json:"pin" minLength:"1" doc:"Financial transaction PIN used only for payment authorization after registration"`
+	}
+}
+
 type authLogoutRequest struct {
 	Body struct {
 		Token string `json:"token" minLength:"1" doc:"DANTE-issued session token to invalidate"`
@@ -90,6 +99,10 @@ type accountBalanceHeaders struct {
 }
 
 type authLoginResponse struct {
+	Body authSessionDTO
+}
+
+type authRegisterResponse struct {
 	Body authSessionDTO
 }
 
@@ -165,6 +178,22 @@ type cacheStatsResponse struct {
 	Body cacheStatsDTO
 }
 
+type cacheInvalidateRequest struct {
+	Body struct {
+		MerchantID    *string `json:"merchant_id,omitempty" format:"uuid" doc:"Merchant UUID whose cached lookup entry should be removed"`
+		AccountID     *string `json:"account_id,omitempty" format:"uuid" doc:"Account UUID whose cached balance snapshot should be removed"`
+		TransactionID *string `json:"transaction_id,omitempty" format:"uuid" doc:"Transaction UUID whose cached status entry should be removed"`
+		SessionToken  *string `json:"session_token,omitempty" doc:"DANTE session token whose cached session entry should be removed"`
+	}
+}
+
+type cacheInvalidateResponse struct {
+	Body struct {
+		Message     string   `json:"message" doc:"Human-readable invalidation result"`
+		Invalidated []string `json:"invalidated" doc:"Cache key categories that were invalidated"`
+	}
+}
+
 type systemStatusResponse struct {
 	Body systemStatusDTO
 }
@@ -179,6 +208,12 @@ type accountBalanceResponse struct {
 
 type queueStatusResponse struct {
 	Body queueStatusDTO
+}
+
+type queueSnapshotDTO struct {
+	Name      string `json:"name" doc:"RabbitMQ queue name"`
+	Messages  int    `json:"messages" doc:"Current RabbitMQ message depth for the queue"`
+	Consumers int    `json:"consumers" doc:"Current active RabbitMQ consumer count for the queue"`
 }
 
 type merchantDTO struct {
@@ -264,9 +299,9 @@ type systemStatusDTO struct {
 }
 
 type queueStatusDTO struct {
-	Status string            `json:"status" doc:"Overall queue connectivity state"`
-	Queues map[string]string `json:"queues" doc:"Configured application queues keyed by workflow name"`
-	Broker dependencyStatus  `json:"broker" doc:"RabbitMQ broker connectivity state"`
+	Status string                      `json:"status" doc:"Overall queue connectivity state"`
+	Queues map[string]queueSnapshotDTO `json:"queues" doc:"Configured application queues keyed by queue name with live depth and consumer counts"`
+	Broker dependencyStatus            `json:"broker" doc:"RabbitMQ broker connectivity state"`
 }
 
 type dependencyStatus struct {
@@ -292,7 +327,7 @@ const openAPIDescription = `DANTE is a middleware layer in front of a legacy ban
 
 ### Delivery Status
 
-This documentation reflects the current development build. QRIS and transfer intake, RabbitMQ publishing, and async worker execution are active. Richer retry behavior and the remaining legacy-backed account endpoints are still in progress.
+This documentation reflects the current development build. Auth/session issuance, account profile and balance reads, QRIS and transfer intake, RabbitMQ publishing, async worker execution, and bounded retry with dead-letter routing are active. Broader transaction retry controls and additional operational hardening are still in progress.
 `
 
 func Start() {
@@ -339,7 +374,6 @@ func Start() {
 		},
 	)
 	qrisPublisher := queue.NewPublisher(cfg.RabbitMQ)
-	qrisConsumer := queue.NewConsumer(cfg.RabbitMQ)
 	authSvc := authservice.NewService(cacheClient, legacyClient)
 	accountSvc := accountservice.NewService(store.Queries, cacheClient, legacyClient)
 	merchantSvc := merchantservice.NewService(cacheClient, store.Queries, legacyMerchantClient, cacheStats)
@@ -354,7 +388,8 @@ func Start() {
 		Service:     "dante-api-systems",
 		Version:     cfg.App.Version,
 		Environment: cfg.App.Environment,
-	}, cacheStats, db, redisClient)
+	}, cacheStats, db, redisClient, cfg.RabbitMQ)
+	qrisConsumer := queue.NewConsumer(cfg.RabbitMQ, metricsHandler)
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
@@ -408,7 +443,7 @@ func Start() {
 		},
 		{
 			Name:        "Accounts",
-			Description: "Account-facing transaction history endpoints. Balance and profile APIs remain planned pending legacy contract readiness.",
+			Description: "Account profile, balance, and transaction history endpoints backed by local mappings with controlled legacy refresh where needed.",
 		},
 		{
 			Name:        "Cache",
@@ -431,16 +466,20 @@ func Start() {
 	api := humachi.New(router, apiConfig)
 
 	if cfg.RabbitMQ.URL != "" {
-		go func() {
-			if err := qrisConsumer.RunQRISPaymentWorker(ctx, qrisWorker); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("qris worker stopped: %v", err)
-			}
-		}()
-		go func() {
-			if err := qrisConsumer.RunTransferWorker(ctx, transferWorker); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("transfer worker stopped: %v", err)
-			}
-		}()
+		for i := 0; i < normalizedWorkerCount(cfg.RabbitMQ.QRISWorkers); i++ {
+			go func(workerIndex int) {
+				if err := qrisConsumer.RunQRISPaymentWorker(ctx, qrisWorker); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("qris worker %d stopped: %v", workerIndex+1, err)
+				}
+			}(i)
+		}
+		for i := 0; i < normalizedWorkerCount(cfg.RabbitMQ.TransferWorkers); i++ {
+			go func(workerIndex int) {
+				if err := qrisConsumer.RunTransferWorker(ctx, transferWorker); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("transfer worker %d stopped: %v", workerIndex+1, err)
+				}
+			}(i)
+		}
 	}
 
 	huma.Register(api, huma.Operation{
@@ -531,6 +570,31 @@ func Start() {
 		resp.Body.Service = "dante-api-systems"
 		resp.Body.Version = cfg.App.Version
 		resp.Body.Environment = cfg.App.Environment
+		return resp, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "post-auth-register",
+		Method:      http.MethodPost,
+		Path:        "/v1/auth/register",
+		Summary:     "Register a new customer account",
+		Description: "Creates a customer account in the legacy banking system, then immediately logs the customer in and issues a DANTE session token for subsequent requests.",
+		Tags:        []string{"Auth"},
+	}, func(ctx context.Context, input *authRegisterRequest) (*authRegisterResponse, error) {
+		result, err := authSvc.Register(ctx, input.Body.Name, input.Body.Email, input.Body.Password, input.Body.PIN)
+		if err != nil {
+			switch {
+			case errors.Is(err, authservice.ErrEmailAlreadyRegistered):
+				return nil, huma.Error409Conflict("email is already registered")
+			case errors.Is(err, authservice.ErrExpiredSession):
+				return nil, huma.Error503ServiceUnavailable("legacy registration produced an expired session")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to register against legacy", err)
+			}
+		}
+
+		resp := &authRegisterResponse{}
+		resp.Body = mapAuthSessionResponse(*result)
 		return resp, nil
 	})
 
@@ -976,6 +1040,69 @@ func Start() {
 	})
 
 	huma.Register(api, huma.Operation{
+		OperationID: "post-internal-cache-invalidate",
+		Method:      http.MethodPost,
+		Path:        "/internal/cache/invalidate",
+		Summary:     "Invalidate internal cache entries",
+		Description: "Deletes selected Redis-backed cache entries for merchant lookups, account balance snapshots, transaction status snapshots, or DANTE-issued session tokens.",
+		Tags:        []string{"Internal", "Cache"},
+	}, func(ctx context.Context, input *cacheInvalidateRequest) (*cacheInvalidateResponse, error) {
+		invalidated := make([]string, 0, 4)
+
+		if input.Body.MerchantID == nil && input.Body.AccountID == nil && input.Body.TransactionID == nil && input.Body.SessionToken == nil {
+			return nil, huma.Error400BadRequest("at least one cache target must be provided")
+		}
+
+		if input.Body.MerchantID != nil {
+			merchantID, err := uuid.Parse(*input.Body.MerchantID)
+			if err != nil {
+				return nil, huma.Error400BadRequest("invalid merchant_id", err)
+			}
+			if err := cacheClient.DeleteMerchant(ctx, merchantID); err != nil {
+				return nil, huma.Error503ServiceUnavailable("failed to invalidate merchant cache", err)
+			}
+			invalidated = append(invalidated, "merchant")
+		}
+
+		if input.Body.AccountID != nil {
+			accountID, err := uuid.Parse(*input.Body.AccountID)
+			if err != nil {
+				return nil, huma.Error400BadRequest("invalid account_id", err)
+			}
+			if err := cacheClient.DeleteAccountBalance(ctx, accountID); err != nil {
+				return nil, huma.Error503ServiceUnavailable("failed to invalidate account balance cache", err)
+			}
+			invalidated = append(invalidated, "account_balance")
+		}
+
+		if input.Body.TransactionID != nil {
+			transactionID, err := uuid.Parse(*input.Body.TransactionID)
+			if err != nil {
+				return nil, huma.Error400BadRequest("invalid transaction_id", err)
+			}
+			if err := cacheClient.DeleteTransactionStatus(ctx, transactionID); err != nil {
+				return nil, huma.Error503ServiceUnavailable("failed to invalidate transaction status cache", err)
+			}
+			invalidated = append(invalidated, "transaction_status")
+		}
+
+		if input.Body.SessionToken != nil {
+			if *input.Body.SessionToken == "" {
+				return nil, huma.Error400BadRequest("session_token must not be empty")
+			}
+			if err := cacheClient.DeleteSession(ctx, *input.Body.SessionToken); err != nil {
+				return nil, huma.Error503ServiceUnavailable("failed to invalidate session cache", err)
+			}
+			invalidated = append(invalidated, "session")
+		}
+
+		resp := &cacheInvalidateResponse{}
+		resp.Body.Message = "cache invalidation completed"
+		resp.Body.Invalidated = invalidated
+		return resp, nil
+	})
+
+	huma.Register(api, huma.Operation{
 		OperationID: "get-internal-cache-stats",
 		Method:      http.MethodGet,
 		Path:        "/internal/cache/stats",
@@ -1055,32 +1182,33 @@ func Start() {
 		Method:      http.MethodGet,
 		Path:        "/internal/queue/status",
 		Summary:     "Get internal queue status",
-		Description: "Returns operational queue configuration and RabbitMQ broker connectivity for async transaction intake.",
+		Description: "Returns operational queue configuration, live depth, active consumer counts, and RabbitMQ broker connectivity for async transaction intake.",
 		Tags:        []string{"Internal"},
 	}, func(ctx context.Context, input *struct{}) (*queueStatusResponse, error) {
 		checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
 
 		brokerStatus := dependencyStatus{Status: "ok"}
+		queueSnapshots := map[string]queueSnapshotDTO{}
 		if err := queue.CheckRabbitMQ(checkCtx, cfg.RabbitMQ); err != nil {
 			brokerStatus = dependencyStatus{Status: "error", Detail: err.Error()}
-		}
-
-		queueName := cfg.RabbitMQ.QRISPaymentsQueue
-		if queueName == "" {
-			queueName = "dante.qris.payments"
+		} else {
+			stats, err := queue.InspectConfiguredQueues(checkCtx, cfg.RabbitMQ)
+			if err != nil {
+				brokerStatus = dependencyStatus{Status: "error", Detail: err.Error()}
+			} else {
+				for key, stat := range stats {
+					queueSnapshots[key] = queueSnapshotDTO{
+						Name:      stat.Name,
+						Messages:  stat.Messages,
+						Consumers: stat.Consumers,
+					}
+				}
+			}
 		}
 
 		resp := &queueStatusResponse{}
-		resp.Body.Queues = map[string]string{
-			"qris_payments": queueName,
-			"transfers": func() string {
-				if cfg.RabbitMQ.TransfersQueue != "" {
-					return cfg.RabbitMQ.TransfersQueue
-				}
-				return "dante.transfers"
-			}(),
-		}
+		resp.Body.Queues = queueSnapshots
 		resp.Body.Broker = brokerStatus
 		resp.Body.Status = "ok"
 		if brokerStatus.Status != "ok" {
@@ -1213,4 +1341,11 @@ func mapTransactionDetailResponse(detail transactionservice.DetailView) transact
 
 func stringPtr(value string) *string {
 	return &value
+}
+
+func normalizedWorkerCount(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 1
 }

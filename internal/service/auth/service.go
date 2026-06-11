@@ -16,6 +16,9 @@ import (
 // ErrInvalidCredentials reports that the provided username/password pair is invalid.
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
+// ErrEmailAlreadyRegistered reports that the registration email already exists in legacy.
+var ErrEmailAlreadyRegistered = errors.New("email already registered")
+
 // ErrInvalidToken reports that the provided DANTE session token does not exist.
 var ErrInvalidToken = errors.New("invalid token")
 
@@ -24,6 +27,7 @@ var ErrExpiredSession = errors.New("session expired")
 
 // Authenticator describes the legacy auth operations needed by DANTE auth flows.
 type Authenticator interface {
+	Register(ctx context.Context, name, email, password, pin string) (*legacy.RegisterResult, error)
 	Login(ctx context.Context, email, password string) (*legacy.LoginResult, error)
 	Logout(ctx context.Context, sessionID string) error
 	GetAccountProfile(ctx context.Context, accountID, password string) (*legacy.AccountProfile, error)
@@ -75,55 +79,22 @@ func NewService(store SessionStore, legacyClient Authenticator) *Service {
 
 // Login validates credentials against legacy, then creates a DANTE-issued token.
 func (s *Service) Login(ctx context.Context, username, password string) (*LoginResponse, error) {
-	result, err := s.legacy.Login(ctx, username, password)
+	return s.issueSessionFromLegacyLogin(ctx, username, password)
+}
+
+// Register creates a legacy account, then issues a DANTE session by logging the user in.
+func (s *Service) Register(ctx context.Context, name, email, password, pin string) (*LoginResponse, error) {
+	_, err := s.legacy.Register(ctx, name, email, password, pin)
 	if err != nil {
 		switch {
-		case legacy.IsInvalidCredentials(err):
-			return nil, ErrInvalidCredentials
+		case legacy.IsEmailExists(err):
+			return nil, ErrEmailAlreadyRegistered
 		default:
-			return nil, fmt.Errorf("legacy login failed: %w", err)
+			return nil, fmt.Errorf("legacy register failed: %w", err)
 		}
 	}
 
-	now := s.now().UTC()
-	expiresAt := result.ExpiresAt.UTC()
-	ttl := expiresAt.Sub(now)
-	if ttl <= 0 {
-		return nil, ErrExpiredSession
-	}
-
-	profile, err := s.legacy.GetAccountProfile(ctx, result.AccountID, password)
-	if err != nil {
-		return nil, fmt.Errorf("load legacy account profile after login: %w", err)
-	}
-
-	token, err := newSessionToken()
-	if err != nil {
-		return nil, fmt.Errorf("generate session token: %w", err)
-	}
-
-	entry := cache.SessionEntry{
-		Token:               token,
-		CustomerID:          result.CustomerID,
-		AccountID:           result.AccountID,
-		AccountNumber:       profile.AccountNumber,
-		CustomerName:        profile.Name,
-		LegacySessionID:     result.SessionReference,
-		LegacySessionExpiry: expiresAt,
-		CreatedAt:           now,
-	}
-	if err := s.store.SetSession(ctx, entry, ttl); err != nil {
-		return nil, fmt.Errorf("store dante session: %w", err)
-	}
-
-	return &LoginResponse{
-		Token:         token,
-		CustomerID:    entry.CustomerID,
-		AccountID:     entry.AccountID,
-		AccountNumber: entry.AccountNumber,
-		CustomerName:  entry.CustomerName,
-		ExpiresAt:     expiresAt,
-	}, nil
+	return s.issueSessionFromLegacyLogin(ctx, email, password)
 }
 
 // Logout invalidates the legacy session, then deletes the DANTE-issued token.
@@ -180,4 +151,56 @@ func newSessionToken() (string, error) {
 	}
 
 	return "dante_" + hex.EncodeToString(raw[:]), nil
+}
+
+func (s *Service) issueSessionFromLegacyLogin(ctx context.Context, username, password string) (*LoginResponse, error) {
+	result, err := s.legacy.Login(ctx, username, password)
+	if err != nil {
+		switch {
+		case legacy.IsInvalidCredentials(err):
+			return nil, ErrInvalidCredentials
+		default:
+			return nil, fmt.Errorf("legacy login failed: %w", err)
+		}
+	}
+
+	now := s.now().UTC()
+	expiresAt := result.ExpiresAt.UTC()
+	ttl := expiresAt.Sub(now)
+	if ttl <= 0 {
+		return nil, ErrExpiredSession
+	}
+
+	profile, err := s.legacy.GetAccountProfile(ctx, result.AccountID, password)
+	if err != nil {
+		return nil, fmt.Errorf("load legacy account profile after login: %w", err)
+	}
+
+	token, err := newSessionToken()
+	if err != nil {
+		return nil, fmt.Errorf("generate session token: %w", err)
+	}
+
+	entry := cache.SessionEntry{
+		Token:               token,
+		CustomerID:          result.CustomerID,
+		AccountID:           result.AccountID,
+		AccountNumber:       profile.AccountNumber,
+		CustomerName:        profile.Name,
+		LegacySessionID:     result.SessionReference,
+		LegacySessionExpiry: expiresAt,
+		CreatedAt:           now,
+	}
+	if err := s.store.SetSession(ctx, entry, ttl); err != nil {
+		return nil, fmt.Errorf("store dante session: %w", err)
+	}
+
+	return &LoginResponse{
+		Token:         token,
+		CustomerID:    entry.CustomerID,
+		AccountID:     entry.AccountID,
+		AccountNumber: entry.AccountNumber,
+		CustomerName:  entry.CustomerName,
+		ExpiresAt:     expiresAt,
+	}, nil
 }

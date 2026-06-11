@@ -25,7 +25,7 @@ Status legend:
 - [x] Cross-platform Go-based migration command (`cmd/migrate`)
 - [x] Redis client and cache package
 - [x] RabbitMQ publisher / worker foundation
-- [-] Legacy adapter implementation
+- [x] Legacy adapter implementation
 - [x] `/metrics` endpoint for Prometheus scraping
 
 ---
@@ -98,7 +98,7 @@ Focus: Redis layer, read APIs, cache behavior, API/runtime polish, and database 
 - [x] `GET /ready`
 - [x] `GET /internal/system/status`
 - [x] `GET /internal/cache/stats`
-- [ ] `POST /internal/cache/invalidate`
+- [x] `POST /internal/cache/invalidate`
 
 ---
 
@@ -109,8 +109,10 @@ Focus: payment flow design, worker/queue processing, retries, transaction-state 
 ### Payments, Queueing, and Transaction Lifecycle
 
 - [x] Define login/auth contract backed by legacy credential validation
+- [x] Define registration contract backed by legacy account creation
 - [x] Define QRIS payment request/response contract
 - [x] Define transfer request/response contract
+- [x] Add `POST /v1/auth/register`
 - [x] Add `POST /v1/auth/login`
 - [x] Add `POST /v1/auth/logout`
 - [x] Add `GET /v1/auth/session`
@@ -133,7 +135,7 @@ Focus: payment flow design, worker/queue processing, retries, transaction-state 
 - [x] Add balance cache invalidation after successful transfer
 - [ ] Add async handling for non-critical side effects (logging / notification / audit-style tasks)
 - [ ] Add transaction state transitions and retries
-- [ ] Add queue visibility and operational metrics
+- [x] Add queue visibility and operational metrics
 
 ### Transaction State Model
 
@@ -148,9 +150,9 @@ Focus: payment flow design, worker/queue processing, retries, transaction-state 
 
 - [-] Define login failure contract for invalid credentials, blocked account, and legacy unavailability
 - [x] Add timeout policy for legacy calls
-- [ ] Add worker retry strategy with exponential backoff
+- [x] Add worker retry strategy with exponential backoff
 - [-] Add circuit breaker for degraded legacy calls
-- [ ] Add load leveling behavior through worker concurrency limits
+- [x] Add load leveling behavior through worker concurrency limits
 - [ ] Decide fallback response when legacy is unavailable
 
 ### TIF Operational Endpoints
@@ -167,14 +169,14 @@ Focus: deployment/runtime stability, queue infrastructure support, network behav
 ### Infrastructure and Runtime Stability
 
 - [x] RabbitMQ publisher / worker foundation
-- [-] Legacy adapter implementation
+- [x] Legacy adapter implementation
 - [x] Add legacy login adapter (`POST /legacy/auth/login`)
 - [x] Add legacy logout adapter (`POST /legacy/auth/logout`)
 - [x] Add legacy account profile adapter (`GET /legacy/accounts/{accountId}`)
 - [x] Add legacy balance adapter (`GET /legacy/accounts/{accountId}/balance`)
 - [x] Add legacy transfer adapter (`POST /legacy/transfers`)
 - [x] Add legacy QRIS payment adapter (`POST /legacy/payments/qris`)
-- [ ] Add RabbitMQ dead-letter queue
+- [x] Add RabbitMQ dead-letter queue
 - [x] Add rate limiting for public endpoints
 - [-] Log all legacy failures into PostgreSQL
 
@@ -217,10 +219,10 @@ Focus: database evolution, observability, cross-cutting repository work, and tea
 - [x] Track p50/p95/p99 latency
 - [x] Track request count and error rate
 - [x] Track Redis cache hit/miss
-- [ ] Track legacy call latency
-- [ ] Track legacy call success/failure rate
-- [ ] Track RabbitMQ queue depth / worker lag
-- [ ] Track transaction state counts
+- [x] Track legacy call latency
+- [x] Track legacy call success/failure rate
+- [x] Track RabbitMQ queue depth / worker lag
+- [x] Track transaction state counts
 - [x] Add Prometheus scrape config
 - [x] Add Grafana dashboard
 

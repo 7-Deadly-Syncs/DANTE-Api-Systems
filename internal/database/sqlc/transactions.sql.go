@@ -179,6 +179,43 @@ func (q *Queries) GetTransactionByIdempotencyKey(ctx context.Context, idempotenc
 	return i, err
 }
 
+const getTransactionStateCounts = `-- name: GetTransactionStateCounts :many
+SELECT
+    status,
+    COUNT(*)::bigint AS transactions_total
+FROM transactions
+GROUP BY status
+ORDER BY status
+`
+
+type GetTransactionStateCountsRow struct {
+	Status            string `json:"status"`
+	TransactionsTotal int64  `json:"transactions_total"`
+}
+
+func (q *Queries) GetTransactionStateCounts(ctx context.Context) ([]GetTransactionStateCountsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getTransactionStateCounts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetTransactionStateCountsRow{}
+	for rows.Next() {
+		var i GetTransactionStateCountsRow
+		if err := rows.Scan(&i.Status, &i.TransactionsTotal); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getTransactionStatusByID = `-- name: GetTransactionStatusByID :one
 SELECT id, status, requested_at, processed_at, updated_at
 FROM transactions

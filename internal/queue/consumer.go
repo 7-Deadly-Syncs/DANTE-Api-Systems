@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/config"
@@ -22,14 +23,21 @@ type TransferHandler interface {
 	HandleTransfer(ctx context.Context, msg TransferMessage) error
 }
 
+// Observer receives queue-processing telemetry events.
+type Observer interface {
+	ObserveWorkerLag(queue string, lag time.Duration)
+	ObserveRetry(queue string, attempt int, terminal bool)
+}
+
 // Consumer consumes async transaction jobs from RabbitMQ.
 type Consumer struct {
-	cfg config.RabbitMQConfig
+	cfg      config.RabbitMQConfig
+	observer Observer
 }
 
 // NewConsumer constructs a RabbitMQ consumer from runtime config.
-func NewConsumer(cfg config.RabbitMQConfig) *Consumer {
-	return &Consumer{cfg: cfg}
+func NewConsumer(cfg config.RabbitMQConfig, observer Observer) *Consumer {
+	return &Consumer{cfg: cfg, observer: observer}
 }
 
 // RunQRISPaymentWorker keeps a QRIS consumer alive until the parent context is canceled.
@@ -85,12 +93,9 @@ func (c *Consumer) RunTransferWorker(ctx context.Context, handler TransferHandle
 }
 
 func (c *Consumer) runQRISPaymentSession(ctx context.Context, handler QRISPaymentHandler) error {
-	queueName := c.cfg.QRISPaymentsQueue
-	if queueName == "" {
-		queueName = "dante.qris.payments"
-	}
+	queueName := qrisQueueName(c.cfg)
 
-	return c.runSession(ctx, queueName, func(ctx context.Context, body []byte) error {
+	return c.runSession(ctx, namesForQueue(queueName), func(ctx context.Context, body []byte) error {
 		var msg QRISPaymentMessage
 		if err := json.Unmarshal(body, &msg); err != nil {
 			return err
@@ -100,12 +105,9 @@ func (c *Consumer) runQRISPaymentSession(ctx context.Context, handler QRISPaymen
 }
 
 func (c *Consumer) runTransferSession(ctx context.Context, handler TransferHandler) error {
-	queueName := c.cfg.TransfersQueue
-	if queueName == "" {
-		queueName = "dante.transfers"
-	}
+	queueName := transfersQueueName(c.cfg)
 
-	return c.runSession(ctx, queueName, func(ctx context.Context, body []byte) error {
+	return c.runSession(ctx, namesForQueue(queueName), func(ctx context.Context, body []byte) error {
 		var msg TransferMessage
 		if err := json.Unmarshal(body, &msg); err != nil {
 			return err
@@ -114,7 +116,7 @@ func (c *Consumer) runTransferSession(ctx context.Context, handler TransferHandl
 	})
 }
 
-func (c *Consumer) runSession(ctx context.Context, queueName string, handle func(context.Context, []byte) error) error {
+func (c *Consumer) runSession(ctx context.Context, names queueNames, handle func(context.Context, []byte) error) error {
 	dialer := amqp.Config{
 		Dial: amqp.DefaultDial(c.cfg.DialTimeout),
 	}
@@ -131,20 +133,16 @@ func (c *Consumer) runSession(ctx context.Context, queueName string, handle func
 	}
 	defer ch.Close()
 
-	_, err = ch.QueueDeclare(
-		queueName,
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		return fmt.Errorf("declare rabbitmq queue: %w", err)
+	if err := declareQueueTopology(ch, names); err != nil {
+		return fmt.Errorf("declare rabbitmq queue topology: %w", err)
+	}
+
+	if err := ch.Qos(prefetchCount(c.cfg), 0, false); err != nil {
+		return fmt.Errorf("configure rabbitmq qos: %w", err)
 	}
 
 	deliveries, err := ch.Consume(
-		queueName,
+		names.Primary,
 		"",
 		false,
 		false,
@@ -165,19 +163,48 @@ func (c *Consumer) runSession(ctx context.Context, queueName string, handle func
 				return fmt.Errorf("rabbitmq delivery channel closed")
 			}
 
+			if c.observer != nil {
+				if lag := messageLag(delivery.Headers); lag > 0 {
+					c.observer.ObserveWorkerLag(names.Primary, lag)
+				}
+			}
+
 			jobCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			err := handle(jobCtx, delivery.Body)
 			cancel()
 			if err != nil {
 				if _, ok := err.(*json.SyntaxError); ok {
+					if c.observer != nil {
+						c.observer.ObserveRetry(names.Primary, retryCountFromHeaders(delivery.Headers), true)
+					}
 					_ = delivery.Reject(false)
 					continue
 				}
 				if _, ok := err.(*json.UnmarshalTypeError); ok {
+					if c.observer != nil {
+						c.observer.ObserveRetry(names.Primary, retryCountFromHeaders(delivery.Headers), true)
+					}
 					_ = delivery.Reject(false)
 					continue
 				}
-				_ = delivery.Nack(false, true)
+
+				attempt := retryCountFromHeaders(delivery.Headers) + 1
+				if attempt > maxRetryAttempts(c.cfg) {
+					if c.observer != nil {
+						c.observer.ObserveRetry(names.Primary, attempt, true)
+					}
+					_ = delivery.Reject(false)
+					continue
+				}
+
+				if err := c.publishRetry(ctx, ch, names, delivery, attempt); err != nil {
+					_ = delivery.Nack(false, true)
+					continue
+				}
+				if c.observer != nil {
+					c.observer.ObserveRetry(names.Primary, attempt, false)
+				}
+				_ = delivery.Ack(false)
 				continue
 			}
 
@@ -186,4 +213,83 @@ func (c *Consumer) runSession(ctx context.Context, queueName string, handle func
 			}
 		}
 	}
+}
+
+func (c *Consumer) publishRetry(ctx context.Context, ch *amqp.Channel, names queueNames, delivery amqp.Delivery, attempt int) error {
+	headers := cloneHeaders(delivery.Headers)
+	headers[headerRetryCount] = int32(attempt)
+	if _, ok := headers[headerFirstEnqueuedAt]; !ok {
+		headers[headerFirstEnqueuedAt] = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+
+	retryDelay := retryDelayForAttempt(c.cfg, attempt)
+	return ch.PublishWithContext(ctx, "", names.Retry, false, false, amqp.Publishing{
+		ContentType:     delivery.ContentType,
+		ContentEncoding: delivery.ContentEncoding,
+		Headers:         headers,
+		Body:            delivery.Body,
+		Timestamp:       time.Now().UTC(),
+		Expiration:      strconv.FormatInt(retryDelay.Milliseconds(), 10),
+	})
+}
+
+func retryCountFromHeaders(headers amqp.Table) int {
+	if headers == nil {
+		return 0
+	}
+
+	switch value := headers[headerRetryCount].(type) {
+	case int32:
+		return int(value)
+	case int64:
+		return int(value)
+	case int:
+		return value
+	case string:
+		parsed, err := strconv.Atoi(value)
+		if err == nil {
+			return parsed
+		}
+	}
+
+	return 0
+}
+
+func messageLag(headers amqp.Table) time.Duration {
+	if headers == nil {
+		return 0
+	}
+
+	raw, ok := headers[headerFirstEnqueuedAt]
+	if !ok {
+		return 0
+	}
+
+	value, ok := raw.(string)
+	if !ok {
+		return 0
+	}
+
+	timestamp, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return 0
+	}
+
+	lag := time.Since(timestamp)
+	if lag < 0 {
+		return 0
+	}
+	return lag
+}
+
+func cloneHeaders(headers amqp.Table) amqp.Table {
+	if len(headers) == 0 {
+		return amqp.Table{}
+	}
+
+	cloned := make(amqp.Table, len(headers))
+	for key, value := range headers {
+		cloned[key] = value
+	}
+	return cloned
 }

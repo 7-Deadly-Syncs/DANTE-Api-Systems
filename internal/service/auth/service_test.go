@@ -12,12 +12,18 @@ import (
 )
 
 type fakeLegacy struct {
-	loginResult *legacy.LoginResult
-	loginErr    error
-	profile     *legacy.AccountProfile
-	profileErr  error
-	logoutErr   error
-	logoutInput string
+	registerResult *legacy.RegisterResult
+	registerErr    error
+	loginResult    *legacy.LoginResult
+	loginErr       error
+	profile        *legacy.AccountProfile
+	profileErr     error
+	logoutErr      error
+	logoutInput    string
+}
+
+func (f *fakeLegacy) Register(ctx context.Context, name, email, password, pin string) (*legacy.RegisterResult, error) {
+	return f.registerResult, f.registerErr
 }
 
 func (f *fakeLegacy) Login(ctx context.Context, email, password string) (*legacy.LoginResult, error) {
@@ -119,6 +125,61 @@ func TestLoginMapsInvalidCredentials(t *testing.T) {
 	_, err := svc.Login(context.Background(), "bad@example.com", "bad")
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
+func TestRegisterCreatesLegacyAccountAndDanteSession(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 10, 0, 0, 0, time.UTC)
+	store := &fakeSessionStore{}
+	svc := NewService(store, &fakeLegacy{
+		registerResult: &legacy.RegisterResult{
+			CustomerID:    "CUST123",
+			AccountID:     "ACC987654",
+			AccountNumber: "2623860486223779",
+		},
+		loginResult: &legacy.LoginResult{
+			CustomerID:       "CUST123",
+			AccountID:        "ACC987654",
+			SessionReference: "SESS-123",
+			ExpiresAt:        now.Add(45 * time.Minute),
+		},
+		profile: &legacy.AccountProfile{
+			CustomerID:    "CUST123",
+			AccountID:     "ACC987654",
+			AccountNumber: "2623860486223779",
+			Name:          "Budi Santoso",
+		},
+	})
+	svc.now = func() time.Time { return now }
+
+	resp, err := svc.Register(context.Background(), "Budi Santoso", "budi@example.com", "secret", "123456")
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	if resp.Token == "" {
+		t.Fatalf("expected non-empty token")
+	}
+	if resp.AccountNumber != "2623860486223779" {
+		t.Fatalf("unexpected account number: %s", resp.AccountNumber)
+	}
+}
+
+func TestRegisterMapsDuplicateEmail(t *testing.T) {
+	t.Parallel()
+
+	svc := NewService(&fakeSessionStore{}, &fakeLegacy{
+		registerErr: &legacy.OperationError{
+			Operation: "register",
+			Response:  "ERR|EMAIL_EXISTS",
+		},
+	})
+
+	_, err := svc.Register(context.Background(), "Budi", "budi@example.com", "secret", "123456")
+	if !errors.Is(err, ErrEmailAlreadyRegistered) {
+		t.Fatalf("expected ErrEmailAlreadyRegistered, got %v", err)
 	}
 }
 

@@ -80,3 +80,11 @@ WHERE account_id = $1
   )
 ORDER BY created_at DESC, id DESC
 LIMIT $4;
+
+-- name: GetTransactionStateCounts :many
+SELECT
+    status,
+    COUNT(*)::bigint AS transactions_total
+FROM transactions
+GROUP BY status
+ORDER BY status;

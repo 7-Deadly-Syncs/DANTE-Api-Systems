@@ -68,6 +68,52 @@ func (q *Queries) CreateLegacyCallLog(ctx context.Context, arg CreateLegacyCallL
 	return i, err
 }
 
+const getLegacyCallMetrics = `-- name: GetLegacyCallMetrics :many
+SELECT
+    endpoint,
+    success,
+    COUNT(*)::bigint AS calls_total,
+    COALESCE(AVG(latency_ms), 0)::bigint AS avg_latency_ms
+FROM legacy_call_logs
+GROUP BY endpoint, success
+ORDER BY endpoint, success
+`
+
+type GetLegacyCallMetricsRow struct {
+	Endpoint     string `json:"endpoint"`
+	Success      bool   `json:"success"`
+	CallsTotal   int64  `json:"calls_total"`
+	AvgLatencyMs int64  `json:"avg_latency_ms"`
+}
+
+func (q *Queries) GetLegacyCallMetrics(ctx context.Context) ([]GetLegacyCallMetricsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getLegacyCallMetrics)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetLegacyCallMetricsRow{}
+	for rows.Next() {
+		var i GetLegacyCallMetricsRow
+		if err := rows.Scan(
+			&i.Endpoint,
+			&i.Success,
+			&i.CallsTotal,
+			&i.AvgLatencyMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLegacyCallLogsByTransactionID = `-- name: ListLegacyCallLogsByTransactionID :many
 SELECT id, transaction_id, endpoint, method, status_code, success, latency_ms, error_message, created_at
 FROM legacy_call_logs

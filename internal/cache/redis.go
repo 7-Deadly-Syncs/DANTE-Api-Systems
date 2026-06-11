@@ -191,6 +191,27 @@ func (c *Client) SetMerchantNotFound(ctx context.Context, merchantID uuid.UUID, 
 	return nil
 }
 
+// DeleteMerchant removes a cached merchant or negative-cache entry.
+func (c *Client) DeleteMerchant(ctx context.Context, merchantID uuid.UUID) error {
+	ctx, span := tracing.StartClientSpan(ctx, "redis", "redis.del merchant",
+		attribute.String("db.system", "redis"),
+		attribute.String("db.operation", "DEL"),
+		attribute.String("cache.key_type", "merchant"),
+		attribute.String("merchant.id", merchantID.String()),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr)
+	}()
+
+	if err := c.Redis.Del(ctx, MerchantKey(merchantID)).Err(); err != nil {
+		spanErr = err
+		return fmt.Errorf("delete merchant cache payload: %w", err)
+	}
+
+	return nil
+}
+
 // GetTransactionStatus fetches cached transaction status data by transaction ID.
 func (c *Client) GetTransactionStatus(ctx context.Context, transactionID uuid.UUID) (*TransactionStatusCacheEntry, error) {
 	ctx, span := tracing.StartClientSpan(ctx, "redis", "redis.get transaction_status",
@@ -247,6 +268,27 @@ func (c *Client) SetTransactionStatus(ctx context.Context, entry TransactionStat
 	if err := c.Redis.Set(ctx, TransactionStatusKey(uuid.MustParse(entry.ID)), payload, ttl).Err(); err != nil {
 		spanErr = err
 		return fmt.Errorf("set transaction status cache payload: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteTransactionStatus removes a cached transaction status entry.
+func (c *Client) DeleteTransactionStatus(ctx context.Context, transactionID uuid.UUID) error {
+	ctx, span := tracing.StartClientSpan(ctx, "redis", "redis.del transaction_status",
+		attribute.String("db.system", "redis"),
+		attribute.String("db.operation", "DEL"),
+		attribute.String("cache.key_type", "transaction_status"),
+		attribute.String("transaction.id", transactionID.String()),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr)
+	}()
+
+	if err := c.Redis.Del(ctx, TransactionStatusKey(transactionID)).Err(); err != nil {
+		spanErr = err
+		return fmt.Errorf("delete transaction status cache payload: %w", err)
 	}
 
 	return nil

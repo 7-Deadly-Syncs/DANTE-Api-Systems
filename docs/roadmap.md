@@ -179,10 +179,10 @@ Focus: deployment/runtime stability, queue infrastructure support, network behav
 
 ### Experiment & Simulation Layer
 
-- [ ] Add k6 load testing scripts
+- [x] Add k6 load testing scripts
 - [ ] Add baseline direct-legacy scenario
 - [ ] Add DANTE-mediated scenario
-- [ ] Add tc-netem network simulation script
+- [x] Add tc-netem network simulation script
 - [x] Define network profiles: normal, high latency, packet loss, constrained bandwidth
 - [ ] Store benchmark run metadata
 - [ ] Store benchmark result summaries

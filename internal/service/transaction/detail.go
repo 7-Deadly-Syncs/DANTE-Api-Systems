@@ -8,7 +8,9 @@ import (
 	"time"
 
 	dbsqlc "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database/sqlc"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // DetailQuerier describes the database access needed for full transaction reads.
@@ -45,11 +47,28 @@ func NewDetailService(repo DetailQuerier) *DetailService {
 
 // GetDetail returns the full transaction record by ID.
 func (s *DetailService) GetDetail(ctx context.Context, transactionID uuid.UUID) (*DetailView, error) {
-	row, err := s.repo.GetTransactionByID(ctx, transactionID)
+	ctx, span := tracing.StartInternalSpan(ctx, "service.transaction", "transaction.detail.lookup",
+		attribute.String("transaction.id", transactionID.String()),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr, sql.ErrNoRows)
+	}()
+
+	dbCtx, dbSpan := tracing.StartClientSpan(ctx, "postgres", "postgres.get transaction",
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", "SELECT"),
+		attribute.String("db.sql.table", "transactions"),
+		attribute.String("transaction.id", transactionID.String()),
+	)
+	row, err := s.repo.GetTransactionByID(dbCtx, transactionID)
+	tracing.EndSpan(dbSpan, err, sql.ErrNoRows)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			spanErr = err
 			return nil, err
 		}
+		spanErr = err
 		return nil, fmt.Errorf("read transaction detail from database: %w", err)
 	}
 
@@ -81,5 +100,10 @@ func (s *DetailService) GetDetail(ctx context.Context, transactionID uuid.UUID) 
 		view.ProcessedAt = &processedAt
 	}
 
+	span.SetAttributes(
+		attribute.String("transaction.status", view.Status),
+		attribute.String("account.id", view.AccountID.String()),
+		attribute.String("merchant.id", view.MerchantID.String()),
+	)
 	return view, nil
 }

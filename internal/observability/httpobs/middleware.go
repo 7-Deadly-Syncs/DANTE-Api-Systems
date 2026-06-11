@@ -86,6 +86,7 @@ func Tracing(serviceName string) func(http.Handler) http.Handler {
 					attribute.String("http.target", r.URL.RequestURI()),
 					attribute.String("http.scheme", scheme(r)),
 					attribute.String("net.host.name", r.Host),
+					attribute.String("client.address", r.RemoteAddr),
 					attribute.String("user_agent.original", r.UserAgent()),
 				),
 			)

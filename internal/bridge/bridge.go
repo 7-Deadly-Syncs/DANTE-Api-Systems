@@ -29,6 +29,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type messageResponse struct {
@@ -280,12 +281,26 @@ func Start() {
 			"redis":    "ok",
 		}
 
-		if err := db.PingContext(readyCtx); err != nil {
+		dbReadyCtx, dbReadySpan := tracing.StartClientSpan(readyCtx, "postgres", "postgres.ready",
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", "PING"),
+		)
+		if err := db.PingContext(dbReadyCtx); err != nil {
+			tracing.EndSpan(dbReadySpan, err)
 			dependencies["database"] = "error"
+		} else {
+			tracing.EndSpan(dbReadySpan, nil)
 		}
 
-		if err := redisClient.Ping(readyCtx).Err(); err != nil {
+		redisReadyCtx, redisReadySpan := tracing.StartClientSpan(readyCtx, "redis", "redis.ready",
+			attribute.String("db.system", "redis"),
+			attribute.String("db.operation", "PING"),
+		)
+		if err := redisClient.Ping(redisReadyCtx).Err(); err != nil {
+			tracing.EndSpan(redisReadySpan, err)
 			dependencies["redis"] = "error"
+		} else {
+			tracing.EndSpan(redisReadySpan, nil)
 		}
 
 		resp := &readyResponse{}
@@ -469,12 +484,26 @@ func Start() {
 			"legacy":   {Status: "stub", Detail: "legacy adapter is not implemented yet"},
 		}
 
-		if err := db.PingContext(checkCtx); err != nil {
+		dbCheckCtx, dbCheckSpan := tracing.StartClientSpan(checkCtx, "postgres", "postgres.system_status",
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", "PING"),
+		)
+		if err := db.PingContext(dbCheckCtx); err != nil {
+			tracing.EndSpan(dbCheckSpan, err)
 			dependencies["database"] = dependencyStatus{Status: "error", Detail: err.Error()}
+		} else {
+			tracing.EndSpan(dbCheckSpan, nil)
 		}
 
-		if err := redisClient.Ping(checkCtx).Err(); err != nil {
+		redisCheckCtx, redisCheckSpan := tracing.StartClientSpan(checkCtx, "redis", "redis.system_status",
+			attribute.String("db.system", "redis"),
+			attribute.String("db.operation", "PING"),
+		)
+		if err := redisClient.Ping(redisCheckCtx).Err(); err != nil {
+			tracing.EndSpan(redisCheckSpan, err)
 			dependencies["redis"] = dependencyStatus{Status: "error", Detail: err.Error()}
+		} else {
+			tracing.EndSpan(redisCheckSpan, nil)
 		}
 
 		if err := queue.CheckRabbitMQ(checkCtx, cfg.RabbitMQ); err != nil {

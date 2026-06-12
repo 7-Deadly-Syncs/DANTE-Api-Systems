@@ -88,11 +88,6 @@ type authSessionHeaders struct {
 	Authorization string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
 }
 
-type paymentHeaders struct {
-	Authorization  string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
-	IdempotencyKey string `header:"Idempotency-Key" doc:"Client-supplied idempotency key used to deduplicate payment creation"`
-}
-
 type accountBalanceHeaders struct {
 	Authorization  string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
 	TransactionPIN string `header:"X-Transaction-PIN" doc:"Transaction PIN used to authorize a legacy balance refresh when cache is cold"`
@@ -135,16 +130,18 @@ type authSessionResponse struct {
 }
 
 type qrisPaymentRequest struct {
-	paymentHeaders
-	Body struct {
+	Authorization  string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
+	IdempotencyKey string `header:"Idempotency-Key" doc:"Client-supplied idempotency key used to deduplicate payment creation"`
+	Body           struct {
 		MerchantID string `json:"merchant_id" minLength:"1" doc:"Target merchant reference for the QRIS payment, either a DANTE merchant UUID or a QRIS/legacy merchant code"`
 		Amount     int64  `json:"amount" minimum:"1" doc:"Payment amount in the smallest currency unit"`
 	}
 }
 
 type transferRequest struct {
-	paymentHeaders
-	Body struct {
+	Authorization  string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
+	IdempotencyKey string `header:"Idempotency-Key" doc:"Client-supplied idempotency key used to deduplicate payment creation"`
+	Body           struct {
 		ToAccountNumber string `json:"to_account_number" minLength:"1" doc:"Destination account number for the transfer"`
 		Amount          int64  `json:"amount" minimum:"1" doc:"Transfer amount in the smallest currency unit"`
 		TransactionPIN  string `json:"transaction_pin" minLength:"1" doc:"Transaction PIN used only for financial authorization"`

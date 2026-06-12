@@ -15,6 +15,10 @@ import (
 	"time"
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/config"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 const (
@@ -114,23 +118,38 @@ func (c *Client) Endpoint() string {
 
 // Ping verifies that the SOAP service endpoint is reachable.
 func (c *Client) Ping(ctx context.Context) error {
+	ctx, span := tracing.StartClientSpan(ctx, "legacy", "legacy.ping",
+		attribute.String("legacy.system", "banking"),
+		attribute.String("legacy.operation", "wsdl"),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr)
+	}()
+
 	if strings.TrimSpace(c.endpoint) == "" {
+		spanErr = ErrUnavailable
 		return ErrUnavailable
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.wsdlURL(), nil)
 	if err != nil {
+		spanErr = err
 		return fmt.Errorf("build legacy ping request: %w", err)
 	}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		spanErr = err
 		return fmt.Errorf("call legacy wsdl: %w", err)
 	}
 	defer resp.Body.Close()
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("legacy wsdl returned status %d", resp.StatusCode)
+		spanErr = fmt.Errorf("legacy wsdl returned status %d", resp.StatusCode)
+		return spanErr
 	}
 
 	return nil
@@ -336,36 +355,55 @@ func (c *Client) callAndRequireOK(ctx context.Context, operation string, args ..
 }
 
 func (c *Client) callOperation(ctx context.Context, operation string, args ...string) (string, error) {
+	ctx, span := tracing.StartClientSpan(ctx, "legacy", "legacy.soap "+operation,
+		attribute.String("legacy.system", "banking"),
+		attribute.String("legacy.operation", operation),
+		attribute.String("rpc.system", "soap"),
+		attribute.String("rpc.method", operation),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr, ErrNotFound)
+	}()
+
 	if strings.TrimSpace(c.endpoint) == "" {
+		spanErr = ErrUnavailable
 		return "", ErrUnavailable
 	}
 
 	payload := buildSOAPRequest(operation, args...)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
 	if err != nil {
+		spanErr = err
 		return "", fmt.Errorf("build legacy %s request: %w", operation, err)
 	}
 
 	req.Header.Set("Content-Type", "text/xml; charset=utf-8")
 	req.Header.Set("SOAPAction", operation)
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		spanErr = err
 		return "", fmt.Errorf("call legacy %s: %w", operation, err)
 	}
 	defer resp.Body.Close()
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		spanErr = err
 		return "", fmt.Errorf("read legacy %s response: %w", operation, err)
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("legacy %s returned status %d: %s", operation, resp.StatusCode, strings.TrimSpace(string(body)))
+		spanErr = fmt.Errorf("legacy %s returned status %d: %s", operation, resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", spanErr
 	}
 
 	result, err := parseSOAPReturn(body)
 	if err != nil {
+		spanErr = err
 		return "", fmt.Errorf("parse legacy %s response: %w", operation, err)
 	}
 

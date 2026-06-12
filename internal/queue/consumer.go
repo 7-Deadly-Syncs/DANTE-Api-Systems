@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/config"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const workerReconnectDelay = 3 * time.Second
@@ -169,68 +171,124 @@ func (c *Consumer) runSession(ctx context.Context, names queueNames, handle func
 				}
 			}
 
-			jobCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			attempt := retryCountFromHeaders(delivery.Headers)
+			lag := messageLag(delivery.Headers)
+			messageCtx := extractTraceContext(ctx, delivery.Headers)
+			jobCtx, cancel := context.WithTimeout(messageCtx, 15*time.Second)
+			jobCtx, span := tracing.StartConsumerSpan(jobCtx, "rabbitmq", "rabbitmq.consume "+names.Primary,
+				attribute.String("messaging.system", "rabbitmq"),
+				attribute.String("messaging.operation", "process"),
+				attribute.String("messaging.destination.name", names.Primary),
+				attribute.Int("messaging.message.body.size", len(delivery.Body)),
+				attribute.Int("messaging.rabbitmq.retry_count", attempt),
+				attribute.Int64("messaging.message.lag_ms", lag.Milliseconds()),
+			)
 			err := handle(jobCtx, delivery.Body)
 			cancel()
 			if err != nil {
 				if _, ok := err.(*json.SyntaxError); ok {
 					if c.observer != nil {
-						c.observer.ObserveRetry(names.Primary, retryCountFromHeaders(delivery.Headers), true)
+						c.observer.ObserveRetry(names.Primary, attempt, true)
 					}
+					span.SetAttributes(attribute.String("messaging.message.outcome", "reject_invalid_json"))
+					tracing.EndSpan(span, err)
 					_ = delivery.Reject(false)
 					continue
 				}
 				if _, ok := err.(*json.UnmarshalTypeError); ok {
 					if c.observer != nil {
-						c.observer.ObserveRetry(names.Primary, retryCountFromHeaders(delivery.Headers), true)
-					}
-					_ = delivery.Reject(false)
-					continue
-				}
-
-				attempt := retryCountFromHeaders(delivery.Headers) + 1
-				if attempt > maxRetryAttempts(c.cfg) {
-					if c.observer != nil {
 						c.observer.ObserveRetry(names.Primary, attempt, true)
 					}
+					span.SetAttributes(attribute.String("messaging.message.outcome", "reject_invalid_json"))
+					tracing.EndSpan(span, err)
 					_ = delivery.Reject(false)
 					continue
 				}
 
-				if err := c.publishRetry(ctx, ch, names, delivery, attempt); err != nil {
+				nextAttempt := attempt + 1
+				if nextAttempt > maxRetryAttempts(c.cfg) {
+					if c.observer != nil {
+						c.observer.ObserveRetry(names.Primary, nextAttempt, true)
+					}
+					span.SetAttributes(
+						attribute.String("messaging.message.outcome", "reject_retry_exhausted"),
+						attribute.Int("messaging.rabbitmq.next_retry_count", nextAttempt),
+					)
+					tracing.EndSpan(span, err)
+					_ = delivery.Reject(false)
+					continue
+				}
+
+				retryCtx, retryCancel := context.WithTimeout(context.WithoutCancel(jobCtx), 5*time.Second)
+				retryErr := c.publishRetry(retryCtx, ch, names, delivery, nextAttempt)
+				retryCancel()
+				if retryErr != nil {
+					span.SetAttributes(
+						attribute.String("messaging.message.outcome", "nack_retry_publish_failed"),
+						attribute.Int("messaging.rabbitmq.next_retry_count", nextAttempt),
+					)
+					tracing.EndSpan(span, retryErr)
 					_ = delivery.Nack(false, true)
 					continue
 				}
 				if c.observer != nil {
-					c.observer.ObserveRetry(names.Primary, attempt, false)
+					c.observer.ObserveRetry(names.Primary, nextAttempt, false)
 				}
+				span.SetAttributes(
+					attribute.String("messaging.message.outcome", "retry_published"),
+					attribute.Int("messaging.rabbitmq.next_retry_count", nextAttempt),
+				)
+				tracing.EndSpan(span, err)
 				_ = delivery.Ack(false)
 				continue
 			}
 
 			if err := delivery.Ack(false); err != nil {
+				span.SetAttributes(attribute.String("messaging.message.outcome", "ack_failed"))
+				tracing.EndSpan(span, err)
 				_ = delivery.Reject(false)
+				continue
 			}
+			span.SetAttributes(attribute.String("messaging.message.outcome", "ack"))
+			tracing.EndSpan(span, nil)
 		}
 	}
 }
 
 func (c *Consumer) publishRetry(ctx context.Context, ch *amqp.Channel, names queueNames, delivery amqp.Delivery, attempt int) error {
+	ctx, span := tracing.StartProducerSpan(ctx, "rabbitmq", "rabbitmq.publish_retry "+names.Retry,
+		attribute.String("messaging.system", "rabbitmq"),
+		attribute.String("messaging.operation", "publish"),
+		attribute.String("messaging.destination.name", names.Retry),
+		attribute.Int("messaging.rabbitmq.retry_count", attempt),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr)
+	}()
+
 	headers := cloneHeaders(delivery.Headers)
 	headers[headerRetryCount] = int32(attempt)
 	if _, ok := headers[headerFirstEnqueuedAt]; !ok {
 		headers[headerFirstEnqueuedAt] = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	headers = injectTraceContext(ctx, headers)
 
 	retryDelay := retryDelayForAttempt(c.cfg, attempt)
-	return ch.PublishWithContext(ctx, "", names.Retry, false, false, amqp.Publishing{
+	if err := ch.PublishWithContext(ctx, "", names.Retry, false, false, amqp.Publishing{
 		ContentType:     delivery.ContentType,
 		ContentEncoding: delivery.ContentEncoding,
 		Headers:         headers,
 		Body:            delivery.Body,
 		Timestamp:       time.Now().UTC(),
 		Expiration:      strconv.FormatInt(retryDelay.Milliseconds(), 10),
-	})
+	}); err != nil {
+		spanErr = err
+		return err
+	}
+
+	span.SetAttributes(attribute.Int64("messaging.rabbitmq.retry_delay_ms", retryDelay.Milliseconds()))
+	return nil
 }
 
 func retryCountFromHeaders(headers amqp.Table) int {

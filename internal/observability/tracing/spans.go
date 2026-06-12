@@ -32,6 +32,26 @@ func StartClientSpan(ctx context.Context, component, name string, attrs ...attri
 	)
 }
 
+// StartProducerSpan starts a span for producing a message to a broker.
+func StartProducerSpan(ctx context.Context, component, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	return otel.Tracer(instrumentationPrefix+component).Start(
+		ctx,
+		name,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(attrs...),
+	)
+}
+
+// StartConsumerSpan starts a span for consuming a message from a broker.
+func StartConsumerSpan(ctx context.Context, component, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	return otel.Tracer(instrumentationPrefix+component).Start(
+		ctx,
+		name,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(attrs...),
+	)
+}
+
 // EndSpan records unexpected errors and ends the span.
 func EndSpan(span trace.Span, err error, ignoredErrors ...error) {
 	if err != nil && !isIgnoredError(err, ignoredErrors...) {

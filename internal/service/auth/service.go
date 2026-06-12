@@ -10,7 +10,9 @@ import (
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/cache"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/legacy"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // ErrInvalidCredentials reports that the provided username/password pair is invalid.
@@ -79,60 +81,128 @@ func NewService(store SessionStore, legacyClient Authenticator) *Service {
 
 // Login validates credentials against legacy, then creates a DANTE-issued token.
 func (s *Service) Login(ctx context.Context, username, password string) (*LoginResponse, error) {
-	return s.issueSessionFromLegacyLogin(ctx, username, password)
+	ctx, span := tracing.StartInternalSpan(ctx, "service.auth", "auth.login",
+		attribute.Bool("auth.username_present", username != ""),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr, ErrInvalidCredentials, ErrExpiredSession)
+	}()
+
+	result, err := s.issueSessionFromLegacyLogin(ctx, username, password)
+	spanErr = err
+	if err == nil {
+		span.SetAttributes(attribute.String("auth.result", "session_issued"))
+	}
+	return result, err
 }
 
 // Register creates a legacy account, then issues a DANTE session by logging the user in.
 func (s *Service) Register(ctx context.Context, name, email, password, pin string) (*LoginResponse, error) {
-	_, err := s.legacy.Register(ctx, name, email, password, pin)
+	ctx, span := tracing.StartInternalSpan(ctx, "service.auth", "auth.register",
+		attribute.Bool("auth.email_present", email != ""),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr, ErrEmailAlreadyRegistered, ErrInvalidCredentials, ErrExpiredSession)
+	}()
+
+	legacyCtx, legacySpan := tracing.StartClientSpan(ctx, "legacy", "legacy.register",
+		attribute.String("legacy.system", "banking"),
+		attribute.String("legacy.operation", "register"),
+	)
+	_, err := s.legacy.Register(legacyCtx, name, email, password, pin)
+	tracing.EndSpan(legacySpan, err)
 	if err != nil {
 		switch {
 		case legacy.IsEmailExists(err):
+			span.SetAttributes(attribute.String("auth.result", "email_already_registered"))
+			spanErr = ErrEmailAlreadyRegistered
 			return nil, ErrEmailAlreadyRegistered
 		default:
+			spanErr = err
 			return nil, fmt.Errorf("legacy register failed: %w", err)
 		}
 	}
 
-	return s.issueSessionFromLegacyLogin(ctx, email, password)
+	result, err := s.issueSessionFromLegacyLogin(ctx, email, password)
+	spanErr = err
+	if err == nil {
+		span.SetAttributes(attribute.String("auth.result", "registered_and_session_issued"))
+	}
+	return result, err
 }
 
 // Logout invalidates the legacy session, then deletes the DANTE-issued token.
 func (s *Service) Logout(ctx context.Context, token string) error {
+	ctx, span := tracing.StartInternalSpan(ctx, "service.auth", "auth.logout",
+		attribute.Bool("auth.token_present", token != ""),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr, ErrInvalidToken)
+	}()
+
 	session, err := s.store.GetSession(ctx, token)
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
+			span.SetAttributes(attribute.String("auth.result", "invalid_token"))
+			spanErr = ErrInvalidToken
 			return ErrInvalidToken
 		}
+		spanErr = err
 		return fmt.Errorf("load dante session: %w", err)
 	}
 
-	if err := s.legacy.Logout(ctx, session.LegacySessionID); err != nil && !legacy.IsInvalidSession(err) {
+	legacyCtx, legacySpan := tracing.StartClientSpan(ctx, "legacy", "legacy.logout",
+		attribute.String("legacy.system", "banking"),
+		attribute.String("legacy.operation", "logout"),
+	)
+	err = s.legacy.Logout(legacyCtx, session.LegacySessionID)
+	tracing.EndSpan(legacySpan, err)
+	if err != nil && !legacy.IsInvalidSession(err) {
+		spanErr = err
 		return fmt.Errorf("legacy logout failed: %w", err)
 	}
 
 	if err := s.store.DeleteSession(ctx, token); err != nil {
+		spanErr = err
 		return fmt.Errorf("delete dante session: %w", err)
 	}
 
+	span.SetAttributes(attribute.String("auth.result", "logged_out"))
 	return nil
 }
 
 // GetSession validates and returns a DANTE-issued session by token.
 func (s *Service) GetSession(ctx context.Context, token string) (*SessionView, error) {
+	ctx, span := tracing.StartInternalSpan(ctx, "service.auth", "auth.get_session",
+		attribute.Bool("auth.token_present", token != ""),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr, ErrInvalidToken, ErrExpiredSession)
+	}()
+
 	session, err := s.store.GetSession(ctx, token)
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
+			span.SetAttributes(attribute.String("auth.result", "invalid_token"))
+			spanErr = ErrInvalidToken
 			return nil, ErrInvalidToken
 		}
+		spanErr = err
 		return nil, fmt.Errorf("load dante session: %w", err)
 	}
 
 	if session.LegacySessionExpiry.UTC().Before(s.now().UTC()) {
 		_ = s.store.DeleteSession(ctx, token)
+		span.SetAttributes(attribute.String("auth.result", "expired_session"))
+		spanErr = ErrExpiredSession
 		return nil, ErrExpiredSession
 	}
 
+	span.SetAttributes(attribute.String("auth.result", "valid_session"))
 	return &SessionView{
 		Token:         session.Token,
 		CustomerID:    session.CustomerID,
@@ -154,12 +224,26 @@ func newSessionToken() (string, error) {
 }
 
 func (s *Service) issueSessionFromLegacyLogin(ctx context.Context, username, password string) (*LoginResponse, error) {
-	result, err := s.legacy.Login(ctx, username, password)
+	ctx, span := tracing.StartInternalSpan(ctx, "service.auth", "auth.issue_session_from_legacy_login")
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr, ErrInvalidCredentials, ErrExpiredSession)
+	}()
+
+	legacyLoginCtx, legacyLoginSpan := tracing.StartClientSpan(ctx, "legacy", "legacy.login",
+		attribute.String("legacy.system", "banking"),
+		attribute.String("legacy.operation", "login"),
+	)
+	result, err := s.legacy.Login(legacyLoginCtx, username, password)
+	tracing.EndSpan(legacyLoginSpan, err)
 	if err != nil {
 		switch {
 		case legacy.IsInvalidCredentials(err):
+			span.SetAttributes(attribute.String("auth.result", "invalid_credentials"))
+			spanErr = ErrInvalidCredentials
 			return nil, ErrInvalidCredentials
 		default:
+			spanErr = err
 			return nil, fmt.Errorf("legacy login failed: %w", err)
 		}
 	}
@@ -168,16 +252,26 @@ func (s *Service) issueSessionFromLegacyLogin(ctx context.Context, username, pas
 	expiresAt := result.ExpiresAt.UTC()
 	ttl := expiresAt.Sub(now)
 	if ttl <= 0 {
+		span.SetAttributes(attribute.String("auth.result", "expired_legacy_session"))
+		spanErr = ErrExpiredSession
 		return nil, ErrExpiredSession
 	}
+	span.SetAttributes(attribute.Int64("auth.session_ttl_ms", ttl.Milliseconds()))
 
-	profile, err := s.legacy.GetAccountProfile(ctx, result.AccountID, password)
+	legacyProfileCtx, legacyProfileSpan := tracing.StartClientSpan(ctx, "legacy", "legacy.get_account_profile",
+		attribute.String("legacy.system", "banking"),
+		attribute.String("legacy.operation", "getAccountProfile"),
+	)
+	profile, err := s.legacy.GetAccountProfile(legacyProfileCtx, result.AccountID, password)
+	tracing.EndSpan(legacyProfileSpan, err)
 	if err != nil {
+		spanErr = err
 		return nil, fmt.Errorf("load legacy account profile after login: %w", err)
 	}
 
 	token, err := newSessionToken()
 	if err != nil {
+		spanErr = err
 		return nil, fmt.Errorf("generate session token: %w", err)
 	}
 
@@ -192,9 +286,11 @@ func (s *Service) issueSessionFromLegacyLogin(ctx context.Context, username, pas
 		CreatedAt:           now,
 	}
 	if err := s.store.SetSession(ctx, entry, ttl); err != nil {
+		spanErr = err
 		return nil, fmt.Errorf("store dante session: %w", err)
 	}
 
+	span.SetAttributes(attribute.String("auth.result", "session_stored"))
 	return &LoginResponse{
 		Token:         token,
 		CustomerID:    entry.CustomerID,

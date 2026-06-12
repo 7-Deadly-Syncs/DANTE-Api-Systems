@@ -374,27 +374,53 @@ func (c *Client) DeleteAccountBalance(ctx context.Context, accountID uuid.UUID) 
 
 // GetSession fetches a DANTE-issued session by token.
 func (c *Client) GetSession(ctx context.Context, token string) (*SessionEntry, error) {
+	ctx, span := tracing.StartClientSpan(ctx, "redis", "redis.get session",
+		attribute.String("db.system", "redis"),
+		attribute.String("db.operation", "GET"),
+		attribute.String("cache.key_type", "session"),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr, redis.Nil)
+	}()
+
 	payload, err := c.Redis.Get(ctx, SessionKey(token)).Bytes()
 	if err != nil {
+		spanErr = err
 		return nil, err
 	}
 
 	var entry SessionEntry
 	if err := json.Unmarshal(payload, &entry); err != nil {
+		spanErr = err
 		return nil, fmt.Errorf("unmarshal session cache payload: %w", err)
 	}
 
+	span.SetAttributes(attribute.String("cache.result", "hit"))
 	return &entry, nil
 }
 
 // SetSession stores a DANTE-issued session for the provided TTL.
 func (c *Client) SetSession(ctx context.Context, entry SessionEntry, ttl time.Duration) error {
+	ctx, span := tracing.StartClientSpan(ctx, "redis", "redis.set session",
+		attribute.String("db.system", "redis"),
+		attribute.String("db.operation", "SET"),
+		attribute.String("cache.key_type", "session"),
+		attribute.Int64("cache.ttl_ms", ttl.Milliseconds()),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr)
+	}()
+
 	payload, err := json.Marshal(entry)
 	if err != nil {
+		spanErr = err
 		return fmt.Errorf("marshal session cache payload: %w", err)
 	}
 
 	if err := c.Redis.Set(ctx, SessionKey(entry.Token), payload, ttl).Err(); err != nil {
+		spanErr = err
 		return fmt.Errorf("set session cache payload: %w", err)
 	}
 
@@ -403,7 +429,18 @@ func (c *Client) SetSession(ctx context.Context, entry SessionEntry, ttl time.Du
 
 // DeleteSession removes a DANTE-issued session.
 func (c *Client) DeleteSession(ctx context.Context, token string) error {
+	ctx, span := tracing.StartClientSpan(ctx, "redis", "redis.del session",
+		attribute.String("db.system", "redis"),
+		attribute.String("db.operation", "DEL"),
+		attribute.String("cache.key_type", "session"),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr)
+	}()
+
 	if err := c.Redis.Del(ctx, SessionKey(token)).Err(); err != nil {
+		spanErr = err
 		return fmt.Errorf("delete session cache payload: %w", err)
 	}
 

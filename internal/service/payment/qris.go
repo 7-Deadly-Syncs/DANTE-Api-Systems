@@ -10,9 +10,11 @@ import (
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/cache"
 	dbsqlc "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database/sqlc"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/queue"
 	authservice "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/service/auth"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -84,43 +86,100 @@ func NewQRISService(repo Repository, cacheClient StatusCache, publisher QRISPubl
 
 // CreateTransaction validates idempotency, persists a PROCESSING transaction, caches status, and publishes a queue job.
 func (s *QRISService) CreateTransaction(ctx context.Context, req QRISRequest) (*QRISResult, error) {
-	existing, err := s.repo.GetTransactionByIdempotencyKey(ctx, req.IdempotencyKey)
+	ctx, span := tracing.StartInternalSpan(ctx, "service.payment", "payment.qris.create_transaction",
+		attribute.String("merchant.id", req.MerchantID.String()),
+		attribute.Int64("transaction.amount", req.Amount),
+		attribute.Bool("transaction.idempotency_key_present", req.IdempotencyKey != ""),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr, sql.ErrNoRows, ErrIdempotencyConflict, ErrAccountNotProvisioned, ErrMerchantNotFound)
+	}()
+
+	idempotencyCtx, idempotencySpan := tracing.StartClientSpan(ctx, "postgres", "postgres.get transaction_by_idempotency_key",
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", "SELECT"),
+		attribute.String("db.sql.table", "transactions"),
+	)
+	existing, err := s.repo.GetTransactionByIdempotencyKey(idempotencyCtx, req.IdempotencyKey)
+	tracing.EndSpan(idempotencySpan, err, sql.ErrNoRows)
 	if err == nil {
-		account, accountErr := s.repo.GetAccountByNumber(ctx, req.Session.AccountNumber)
+		accountCtx, accountSpan := tracing.StartClientSpan(ctx, "postgres", "postgres.get account_by_number",
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", "SELECT"),
+			attribute.String("db.sql.table", "accounts"),
+		)
+		account, accountErr := s.repo.GetAccountByNumber(accountCtx, req.Session.AccountNumber)
+		tracing.EndSpan(accountSpan, accountErr)
 		if accountErr != nil {
+			spanErr = accountErr
 			return nil, fmt.Errorf("load account for idempotency comparison: %w", accountErr)
 		}
 
 		if existing.AccountID != account.ID || !existing.MerchantID.Valid || existing.MerchantID.UUID != req.MerchantID || existing.Amount != req.Amount {
+			span.SetAttributes(attribute.String("payment.result", "idempotency_conflict"))
+			spanErr = ErrIdempotencyConflict
 			return nil, ErrIdempotencyConflict
 		}
 
+		span.SetAttributes(
+			attribute.String("payment.result", "idempotency_replay"),
+			attribute.String("transaction.id", existing.ID.String()),
+			attribute.String("transaction.status", existing.Status),
+		)
 		return &QRISResult{
 			Transaction: existing,
 			Created:     false,
 		}, nil
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		spanErr = err
 		return nil, fmt.Errorf("lookup idempotency key: %w", err)
 	}
 
-	account, err := s.repo.GetAccountByNumber(ctx, req.Session.AccountNumber)
+	accountCtx, accountSpan := tracing.StartClientSpan(ctx, "postgres", "postgres.get account_by_number",
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", "SELECT"),
+		attribute.String("db.sql.table", "accounts"),
+	)
+	account, err := s.repo.GetAccountByNumber(accountCtx, req.Session.AccountNumber)
+	tracing.EndSpan(accountSpan, err, sql.ErrNoRows)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			span.SetAttributes(attribute.String("payment.result", "account_not_provisioned"))
+			spanErr = ErrAccountNotProvisioned
 			return nil, ErrAccountNotProvisioned
 		}
+		spanErr = err
 		return nil, fmt.Errorf("load local account: %w", err)
 	}
 
-	merchant, err := s.repo.GetMerchantByID(ctx, req.MerchantID)
+	merchantCtx, merchantSpan := tracing.StartClientSpan(ctx, "postgres", "postgres.get merchant",
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", "SELECT"),
+		attribute.String("db.sql.table", "merchants"),
+		attribute.String("merchant.id", req.MerchantID.String()),
+	)
+	merchant, err := s.repo.GetMerchantByID(merchantCtx, req.MerchantID)
+	tracing.EndSpan(merchantSpan, err, sql.ErrNoRows)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			span.SetAttributes(attribute.String("payment.result", "merchant_not_found"))
+			spanErr = ErrMerchantNotFound
 			return nil, ErrMerchantNotFound
 		}
+		spanErr = err
 		return nil, fmt.Errorf("load merchant: %w", err)
 	}
 
-	txRow, err := s.repo.CreateTransaction(ctx, dbsqlc.CreateTransactionParams{
+	createCtx, createSpan := tracing.StartClientSpan(ctx, "postgres", "postgres.create transaction",
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", "INSERT"),
+		attribute.String("db.sql.table", "transactions"),
+		attribute.String("account.id", account.ID.String()),
+		attribute.String("merchant.id", merchant.ID.String()),
+	)
+	txRow, err := s.repo.CreateTransaction(createCtx, dbsqlc.CreateTransactionParams{
 		UserID:            account.UserID,
 		MerchantID:        uuid.NullUUID{UUID: merchant.ID, Valid: true},
 		AccountID:         account.ID,
@@ -131,9 +190,15 @@ func (s *QRISService) CreateTransaction(ctx context.Context, req QRISRequest) (*
 		FailureReason:     sql.NullString{},
 		ProcessedAt:       sql.NullTime{},
 	})
+	tracing.EndSpan(createSpan, err)
 	if err != nil {
+		spanErr = err
 		return nil, fmt.Errorf("create transaction: %w", err)
 	}
+	span.SetAttributes(
+		attribute.String("transaction.id", txRow.ID.String()),
+		attribute.String("transaction.status", txRow.Status),
+	)
 
 	metadata, err := json.Marshal(map[string]any{
 		"merchant_id":   merchant.ID.String(),
@@ -142,17 +207,28 @@ func (s *QRISService) CreateTransaction(ctx context.Context, req QRISRequest) (*
 		"account_id":    account.ID.String(),
 	})
 	if err != nil {
+		spanErr = err
 		return nil, fmt.Errorf("marshal transaction event metadata: %w", err)
 	}
 
-	if _, err := s.repo.CreateTransactionEvent(ctx, dbsqlc.CreateTransactionEventParams{
+	eventCtx, eventSpan := tracing.StartClientSpan(ctx, "postgres", "postgres.create transaction_event",
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", "INSERT"),
+		attribute.String("db.sql.table", "transaction_events"),
+		attribute.String("transaction.id", txRow.ID.String()),
+		attribute.String("transaction.event_type", eventTypeTransactionCreated),
+	)
+	if _, err := s.repo.CreateTransactionEvent(eventCtx, dbsqlc.CreateTransactionEventParams{
 		TransactionID: txRow.ID,
 		EventType:     eventTypeTransactionCreated,
 		Message:       sql.NullString{String: "transaction accepted for async QRIS processing", Valid: true},
 		Metadata:      metadata,
 	}); err != nil {
+		tracing.EndSpan(eventSpan, err)
+		spanErr = err
 		return nil, fmt.Errorf("create transaction event: %w", err)
 	}
+	tracing.EndSpan(eventSpan, nil)
 
 	if err := s.cache.SetTransactionStatus(ctx, cache.TransactionStatusCacheEntry{
 		ID:          txRow.ID.String(),
@@ -160,6 +236,7 @@ func (s *QRISService) CreateTransaction(ctx context.Context, req QRISRequest) (*
 		RequestedAt: txRow.RequestedAt,
 		UpdatedAt:   txRow.UpdatedAt,
 	}, cache.TransactionStatusTTL); err != nil {
+		spanErr = err
 		return nil, fmt.Errorf("cache transaction status: %w", err)
 	}
 
@@ -172,13 +249,22 @@ func (s *QRISService) CreateTransaction(ctx context.Context, req QRISRequest) (*
 		MerchantCode:  merchant.QrisCode,
 		Amount:        txRow.Amount,
 	}); err != nil {
+		span.SetAttributes(attribute.String("payment.result", "queue_publish_failed"))
 		now := time.Now().UTC()
-		failedRow, updateErr := s.repo.UpdateTransactionStatus(ctx, dbsqlc.UpdateTransactionStatusParams{
+		updateCtx, updateSpan := tracing.StartClientSpan(ctx, "postgres", "postgres.update transaction_status",
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", "UPDATE"),
+			attribute.String("db.sql.table", "transactions"),
+			attribute.String("transaction.id", txRow.ID.String()),
+			attribute.String("transaction.status", statusFailed),
+		)
+		failedRow, updateErr := s.repo.UpdateTransactionStatus(updateCtx, dbsqlc.UpdateTransactionStatusParams{
 			ID:            txRow.ID,
 			Status:        statusFailed,
 			FailureReason: sql.NullString{String: "queue publish failed", Valid: true},
 			ProcessedAt:   sql.NullTime{Time: now, Valid: true},
 		})
+		tracing.EndSpan(updateSpan, updateErr)
 		if updateErr == nil {
 			_ = s.cache.SetTransactionStatus(ctx, cache.TransactionStatusCacheEntry{
 				ID:          failedRow.ID.String(),
@@ -188,22 +274,40 @@ func (s *QRISService) CreateTransaction(ctx context.Context, req QRISRequest) (*
 				UpdatedAt:   failedRow.UpdatedAt,
 			}, cache.TransactionStatusTTL)
 		}
-		_, _ = s.repo.CreateTransactionEvent(ctx, dbsqlc.CreateTransactionEventParams{
+		queueErrCtx, queueErrSpan := tracing.StartClientSpan(ctx, "postgres", "postgres.create transaction_event",
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", "INSERT"),
+			attribute.String("db.sql.table", "transaction_events"),
+			attribute.String("transaction.id", txRow.ID.String()),
+			attribute.String("transaction.event_type", eventTypeTransactionQueueError),
+		)
+		_, queueEventErr := s.repo.CreateTransactionEvent(queueErrCtx, dbsqlc.CreateTransactionEventParams{
 			TransactionID: txRow.ID,
 			EventType:     eventTypeTransactionQueueError,
 			Message:       sql.NullString{String: "failed to publish qris job", Valid: true},
 			Metadata:      json.RawMessage(`{"reason":"queue_publish_failed"}`),
 		})
+		tracing.EndSpan(queueErrSpan, queueEventErr)
+		spanErr = err
 		return nil, fmt.Errorf("publish qris job: %w", err)
 	}
 
-	_, _ = s.repo.CreateTransactionEvent(ctx, dbsqlc.CreateTransactionEventParams{
+	enqueuedCtx, enqueuedSpan := tracing.StartClientSpan(ctx, "postgres", "postgres.create transaction_event",
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", "INSERT"),
+		attribute.String("db.sql.table", "transaction_events"),
+		attribute.String("transaction.id", txRow.ID.String()),
+		attribute.String("transaction.event_type", eventTypeTransactionEnqueued),
+	)
+	_, enqueueEventErr := s.repo.CreateTransactionEvent(enqueuedCtx, dbsqlc.CreateTransactionEventParams{
 		TransactionID: txRow.ID,
 		EventType:     eventTypeTransactionEnqueued,
 		Message:       sql.NullString{String: "transaction queued for worker processing", Valid: true},
 		Metadata:      json.RawMessage(`{"queue":"qris"}`),
 	})
+	tracing.EndSpan(enqueuedSpan, enqueueEventErr)
 
+	span.SetAttributes(attribute.String("payment.result", "created_and_enqueued"))
 	return &QRISResult{
 		Transaction: txRow,
 		Created:     true,

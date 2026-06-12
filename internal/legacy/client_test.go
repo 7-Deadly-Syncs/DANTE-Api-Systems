@@ -156,6 +156,62 @@ func TestRegisterParsesIdentifiers(t *testing.T) {
 	}
 }
 
+func TestGetBalanceParsesThreeFieldLegacyResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("SOAPAction"); got != "balance" {
+			t.Fatalf("unexpected SOAPAction: %s", got)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		requestXML := string(body)
+		if !strings.Contains(requestXML, `<ns:balance>`) {
+			t.Fatalf("expected balance operation, got %s", requestXML)
+		}
+		if !strings.Contains(requestXML, `<ns:args0>2687319122841371</ns:args0>`) {
+			t.Fatalf("expected account number arg, got %s", requestXML)
+		}
+		if !strings.Contains(requestXML, `<ns:args1>123456</ns:args1>`) {
+			t.Fatalf("expected pin arg, got %s", requestXML)
+		}
+
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <ns:balanceResponse xmlns:ns="http://BankService.services.axis2">
+      <ns:return>OK|2687319122841371|00000000000</ns:return>
+    </ns:balanceResponse>
+  </soapenv:Body>
+</soapenv:Envelope>`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		endpoint:   server.URL,
+		httpClient: server.Client(),
+	}
+
+	result, err := client.GetBalance(context.Background(), "2687319122841371", "123456")
+	if err != nil {
+		t.Fatalf("GetBalance returned error: %v", err)
+	}
+
+	if result.AccountID != "2687319122841371" {
+		t.Fatalf("unexpected account id: %s", result.AccountID)
+	}
+	if result.ReferenceAccountID != "2687319122841371" {
+		t.Fatalf("unexpected reference account id: %s", result.ReferenceAccountID)
+	}
+	if result.Balance != 0 {
+		t.Fatalf("unexpected balance: %d", result.Balance)
+	}
+}
+
 func TestPingUsesWsdl(t *testing.T) {
 	t.Parallel()
 

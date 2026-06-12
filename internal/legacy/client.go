@@ -236,18 +236,26 @@ func (c *Client) GetBalance(ctx context.Context, accountID, pin string) (*Balanc
 	if err != nil {
 		return nil, err
 	}
-	if len(parts) < 4 {
+	if len(parts) < 3 {
 		return nil, fmt.Errorf("legacy balance returned incomplete response: %q", strings.Join(parts, "|"))
 	}
 
-	balance, err := strconv.ParseInt(parts[3], 10, 64)
+	accountRef := parts[1]
+	referenceAccountID := parts[1]
+	balanceIndex := 2
+	if len(parts) >= 4 {
+		referenceAccountID = parts[2]
+		balanceIndex = 3
+	}
+
+	balance, err := strconv.ParseInt(parts[balanceIndex], 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("parse legacy balance amount: %w", err)
 	}
 
 	return &BalanceSnapshot{
-		AccountID:          parts[1],
-		ReferenceAccountID: parts[2],
+		AccountID:          accountRef,
+		ReferenceAccountID: referenceAccountID,
 		Balance:            balance,
 	}, nil
 }

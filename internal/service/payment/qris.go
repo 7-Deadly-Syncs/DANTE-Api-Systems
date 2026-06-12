@@ -179,7 +179,7 @@ func (s *QRISService) CreateTransaction(ctx context.Context, req QRISRequest) (*
 	if err := s.publisher.PublishQRISPayment(ctx, queue.QRISPaymentMessage{
 		TransactionID: txRow.ID.String(),
 		AccountUUID:   account.ID.String(),
-		AccountID:     req.Session.AccountID,
+		AccountID:     req.Session.LegacyAccountID,
 		AccountNumber: req.Session.AccountNumber,
 		MerchantID:    merchant.ID.String(),
 		MerchantCode:  merchant.QrisCode,

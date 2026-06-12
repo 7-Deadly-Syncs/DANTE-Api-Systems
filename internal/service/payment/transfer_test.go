@@ -42,8 +42,8 @@ func TestCreateTransferCreatesProcessingTransactionAndPublishes(t *testing.T) {
 
 	result, err := svc.CreateTransaction(context.Background(), TransferRequest{
 		Session: authservice.SessionView{
-			AccountID:     "LEGACY-ACC-1",
-			AccountNumber: "2623860486223779",
+			LegacyAccountID: "LEGACY-ACC-1",
+			AccountNumber:   "2623860486223779",
 		},
 		ToAccountNumber: "888777666555",
 		Amount:          9000,
@@ -61,6 +61,9 @@ func TestCreateTransferCreatesProcessingTransactionAndPublishes(t *testing.T) {
 	}
 	if publisher.transferMessage.ToAccountNumber != "888777666555" {
 		t.Fatalf("unexpected destination account: %s", publisher.transferMessage.ToAccountNumber)
+	}
+	if publisher.transferMessage.FromAccountID != "LEGACY-ACC-1" {
+		t.Fatalf("unexpected source legacy account id: %s", publisher.transferMessage.FromAccountID)
 	}
 	if publisher.transferMessage.TransactionPIN != "123456" {
 		t.Fatalf("unexpected transaction pin forwarding")

@@ -176,8 +176,8 @@ func TestCreateTransactionCreatesProcessingTransactionAndPublishes(t *testing.T)
 
 	result, err := svc.CreateTransaction(context.Background(), QRISRequest{
 		Session: authservice.SessionView{
-			AccountID:     "LEGACY-ACC-1",
-			AccountNumber: "2623860486223779",
+			LegacyAccountID: "LEGACY-ACC-1",
+			AccountNumber:   "2623860486223779",
 		},
 		MerchantRef:    merchantID.String(),
 		Amount:         2500,
@@ -194,6 +194,9 @@ func TestCreateTransactionCreatesProcessingTransactionAndPublishes(t *testing.T)
 	}
 	if publisher.message.AccountUUID != accountID.String() {
 		t.Fatalf("unexpected account uuid: %s", publisher.message.AccountUUID)
+	}
+	if publisher.message.AccountID != "LEGACY-ACC-1" {
+		t.Fatalf("unexpected legacy account id: %s", publisher.message.AccountID)
 	}
 	if publisher.message.MerchantCode != "MERCHANT001" {
 		t.Fatalf("unexpected merchant code: %s", publisher.message.MerchantCode)
@@ -316,8 +319,8 @@ func TestCreateTransactionResolvesMerchantByQrisCodeViaLegacy(t *testing.T) {
 
 	result, err := svc.CreateTransaction(context.Background(), QRISRequest{
 		Session: authservice.SessionView{
-			AccountID:     "LEGACY-ACC-1",
-			AccountNumber: "2623860486223779",
+			LegacyAccountID: "LEGACY-ACC-1",
+			AccountNumber:   "2623860486223779",
 		},
 		MerchantRef:    "M003",
 		Amount:         45000,

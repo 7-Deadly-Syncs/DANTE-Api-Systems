@@ -150,7 +150,7 @@ type transactionPathParams struct {
 }
 
 type accountPathParams struct {
-	AccountID string `path:"accountId" format:"uuid" doc:"Account UUID"`
+	AccountID string `path:"accountId" doc:"Legacy account identifier such as ACC000080"`
 }
 
 type accountTransactionsQueryParams struct {
@@ -225,7 +225,7 @@ type merchantDTO struct {
 }
 
 type accountProfileDTO struct {
-	ID            string `json:"id" doc:"Local account UUID"`
+	ID            string `json:"id" doc:"Legacy account identifier"`
 	UserID        string `json:"user_id" doc:"Local user UUID that owns the account"`
 	AccountNumber string `json:"account_number" doc:"Local account number mapped to the authenticated legacy account"`
 	CustomerID    string `json:"customer_id" doc:"Authoritative customer identifier returned by legacy"`
@@ -234,7 +234,7 @@ type accountProfileDTO struct {
 }
 
 type accountBalanceDTO struct {
-	AccountID          string `json:"account_id" doc:"Local account UUID"`
+	AccountID          string `json:"account_id" doc:"Legacy account identifier"`
 	ReferenceAccountID string `json:"reference_account_id" doc:"Legacy account reference used by the authoritative balance source"`
 	Balance            int64  `json:"balance" doc:"Balance amount in the smallest currency unit"`
 	Source             string `json:"source" doc:"Whether the balance came from Redis cache or a fresh legacy lookup"`
@@ -244,7 +244,7 @@ type accountBalanceDTO struct {
 type authSessionDTO struct {
 	Token         string `json:"token" doc:"DANTE-issued bearer token for subsequent client requests"`
 	CustomerID    string `json:"customer_id" doc:"Authoritative customer identifier returned by legacy"`
-	AccountID     string `json:"account_id" doc:"Authoritative account identifier returned by legacy"`
+	AccountID     string `json:"account_id" doc:"Authoritative legacy account identifier returned by upstream banking services"`
 	AccountNumber string `json:"account_number" doc:"Legacy account number associated with the authenticated session"`
 	CustomerName  string `json:"customer_name" doc:"Customer display name returned by legacy"`
 	ExpiresAt     string `json:"expires_at" doc:"RFC3339 expiration timestamp for the DANTE-issued session token"`
@@ -253,7 +253,7 @@ type authSessionDTO struct {
 type authSessionStateDTO struct {
 	Token         string `json:"token" doc:"Validated DANTE-issued bearer token"`
 	CustomerID    string `json:"customer_id" doc:"Authoritative customer identifier returned by legacy"`
-	AccountID     string `json:"account_id" doc:"Authoritative account identifier returned by legacy"`
+	AccountID     string `json:"account_id" doc:"Authoritative legacy account identifier returned by upstream banking services"`
 	AccountNumber string `json:"account_number" doc:"Legacy account number associated with the authenticated session"`
 	CustomerName  string `json:"customer_name" doc:"Customer display name returned by legacy"`
 	ExpiresAt     string `json:"expires_at" doc:"RFC3339 expiration timestamp for the DANTE-issued session token"`
@@ -808,7 +808,7 @@ func Start() {
 		Method:      http.MethodGet,
 		Path:        "/v1/accounts/{accountId}",
 		Summary:     "Get account profile",
-		Description: "Returns the authenticated account profile for the requested local account ID using the DANTE session plus the local account mapping.",
+		Description: "Returns the authenticated account profile for the requested legacy account ID using the DANTE session plus the local account mapping.",
 		Tags:        []string{"Accounts", "Auth"},
 	}, func(ctx context.Context, input *struct {
 		accountPathParams
@@ -829,12 +829,19 @@ func Start() {
 			}
 		}
 
-		accountID, err := uuid.Parse(input.AccountID)
+		account, err := resolveAuthenticatedLocalAccount(ctx, store.Queries, session, input.AccountID)
 		if err != nil {
-			return nil, huma.Error400BadRequest("invalid account id", err)
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+				return nil, huma.Error404NotFound("account not found")
+			case errors.Is(err, accountservice.ErrAccountAccessDenied):
+				return nil, huma.Error403Forbidden("requested account does not belong to the authenticated session")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to resolve authenticated account", err)
+			}
 		}
 
-		profile, err := accountSvc.GetProfile(ctx, accountID, *session)
+		profile, err := accountSvc.GetProfile(ctx, account.ID, *session)
 		if err != nil {
 			switch {
 			case errors.Is(err, sql.ErrNoRows):
@@ -848,7 +855,7 @@ func Start() {
 
 		resp := &accountProfileResponse{}
 		resp.Body = accountProfileDTO{
-			ID:            profile.ID.String(),
+			ID:            session.LegacyAccountID,
 			UserID:        profile.UserID.String(),
 			AccountNumber: profile.AccountNumber,
 			CustomerID:    profile.CustomerID,
@@ -887,12 +894,19 @@ func Start() {
 			}
 		}
 
-		accountID, err := uuid.Parse(input.AccountID)
+		account, err := resolveAuthenticatedLocalAccount(ctx, store.Queries, session, input.AccountID)
 		if err != nil {
-			return nil, huma.Error400BadRequest("invalid account id", err)
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+				return nil, huma.Error404NotFound("account not found")
+			case errors.Is(err, accountservice.ErrAccountAccessDenied):
+				return nil, huma.Error403Forbidden("requested account does not belong to the authenticated session")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to resolve authenticated account", err)
+			}
 		}
 
-		balance, err := accountSvc.GetBalance(ctx, accountID, *session, input.TransactionPIN)
+		balance, err := accountSvc.GetBalance(ctx, account.ID, *session, input.TransactionPIN)
 		if err != nil {
 			switch {
 			case errors.Is(err, sql.ErrNoRows):
@@ -906,7 +920,7 @@ func Start() {
 
 		resp := &accountBalanceResponse{}
 		resp.Body = accountBalanceDTO{
-			AccountID:          balance.AccountID.String(),
+			AccountID:          session.LegacyAccountID,
 			ReferenceAccountID: balance.ReferenceAccountID,
 			Balance:            balance.Balance,
 			Source:             balance.Source,
@@ -1004,15 +1018,38 @@ func Start() {
 		Method:      http.MethodGet,
 		Path:        "/v1/accounts/{accountId}/transactions",
 		Summary:     "List account transactions",
-		Description: "Returns cursor-paginated transaction history for an account ordered from newest to oldest.",
+		Description: "Returns cursor-paginated transaction history for the authenticated legacy account ordered from newest to oldest.",
 		Tags:        []string{"Accounts", "Transactions"},
 	}, func(ctx context.Context, input *struct {
 		accountPathParams
 		accountTransactionsQueryParams
+		authSessionHeaders
 	}) (*accountTransactionsResponse, error) {
-		accountID, err := uuid.Parse(input.AccountID)
+		token, err := parseBearerToken(input.Authorization)
 		if err != nil {
-			return nil, huma.Error400BadRequest("invalid account id", err)
+			return nil, huma.Error401Unauthorized("missing or invalid bearer token")
+		}
+
+		session, err := authSvc.GetSession(ctx, token)
+		if err != nil {
+			switch {
+			case errors.Is(err, authservice.ErrInvalidToken), errors.Is(err, authservice.ErrExpiredSession):
+				return nil, huma.Error401Unauthorized("invalid or expired token")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to validate session", err)
+			}
+		}
+
+		account, err := resolveAuthenticatedLocalAccount(ctx, store.Queries, session, input.AccountID)
+		if err != nil {
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+				return nil, huma.Error404NotFound("account not found")
+			case errors.Is(err, accountservice.ErrAccountAccessDenied):
+				return nil, huma.Error403Forbidden("requested account does not belong to the authenticated session")
+			default:
+				return nil, huma.Error503ServiceUnavailable("failed to resolve authenticated account", err)
+			}
 		}
 
 		limit, err := transactionservice.NormalizeLimit(input.Limit)
@@ -1021,7 +1058,7 @@ func Start() {
 		}
 
 		page, err := transactionHistorySvc.ListByAccount(ctx, transactionservice.HistoryParams{
-			AccountID: accountID,
+			AccountID: account.ID,
 			Limit:     limit,
 			Cursor:    input.Cursor,
 		})
@@ -1032,7 +1069,9 @@ func Start() {
 		resp := &accountTransactionsResponse{}
 		resp.Body.Items = make([]transactionDetailDTO, 0, len(page.Items))
 		for _, item := range page.Items {
-			resp.Body.Items = append(resp.Body.Items, mapTransactionDetailResponse(item))
+			dto := mapTransactionDetailResponse(item)
+			dto.AccountID = session.LegacyAccountID
+			resp.Body.Items = append(resp.Body.Items, dto)
 		}
 		resp.Body.NextCursor = page.NextCursor
 		return resp, nil
@@ -1240,7 +1279,7 @@ func mapAuthSessionResponse(session authservice.LoginResponse) authSessionDTO {
 	return authSessionDTO{
 		Token:         session.Token,
 		CustomerID:    session.CustomerID,
-		AccountID:     session.AccountID,
+		AccountID:     session.LegacyAccountID,
 		AccountNumber: session.AccountNumber,
 		CustomerName:  session.CustomerName,
 		ExpiresAt:     session.ExpiresAt.UTC().Format(time.RFC3339),
@@ -1251,7 +1290,7 @@ func mapAuthSessionStateResponse(session authservice.SessionView) authSessionSta
 	return authSessionStateDTO{
 		Token:         session.Token,
 		CustomerID:    session.CustomerID,
-		AccountID:     session.AccountID,
+		AccountID:     session.LegacyAccountID,
 		AccountNumber: session.AccountNumber,
 		CustomerName:  session.CustomerName,
 		ExpiresAt:     session.ExpiresAt.UTC().Format(time.RFC3339),
@@ -1272,6 +1311,21 @@ func legacyDependencyStatus(ctx context.Context, client *legacy.Client) dependen
 		Status: "ok",
 		Detail: client.Endpoint(),
 	}
+}
+
+func resolveAuthenticatedLocalAccount(ctx context.Context, repo interface {
+	GetAccountByNumber(ctx context.Context, accountNumber string) (dbsqlc.Account, error)
+}, session *authservice.SessionView, requestedLegacyAccountID string) (dbsqlc.Account, error) {
+	if session == nil || requestedLegacyAccountID != session.LegacyAccountID {
+		return dbsqlc.Account{}, accountservice.ErrAccountAccessDenied
+	}
+
+	account, err := repo.GetAccountByNumber(ctx, session.AccountNumber)
+	if err != nil {
+		return dbsqlc.Account{}, err
+	}
+
+	return account, nil
 }
 
 func parseBearerToken(header string) (string, error) {

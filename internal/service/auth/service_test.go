@@ -166,11 +166,23 @@ func TestLoginCreatesDanteSession(t *testing.T) {
 	if resp.CustomerID != "CUST123" {
 		t.Fatalf("unexpected customer id: %s", resp.CustomerID)
 	}
+	if resp.AccountID != provisioner.account.ID.String() {
+		t.Fatalf("unexpected local account id: %s", resp.AccountID)
+	}
+	if resp.LegacyAccountID != "ACC987654" {
+		t.Fatalf("unexpected legacy account id: %s", resp.LegacyAccountID)
+	}
 	if store.setTTL != 45*time.Minute {
 		t.Fatalf("unexpected ttl: %s", store.setTTL)
 	}
 
 	session := store.sessions[resp.Token]
+	if session.LocalAccountID != provisioner.account.ID.String() {
+		t.Fatalf("unexpected local account id in session: %s", session.LocalAccountID)
+	}
+	if session.LegacyAccountID != "ACC987654" {
+		t.Fatalf("unexpected legacy account id in session: %s", session.LegacyAccountID)
+	}
 	if session.LegacySessionID != "SESS-123" {
 		t.Fatalf("unexpected legacy session id: %s", session.LegacySessionID)
 	}
@@ -237,6 +249,9 @@ func TestRegisterCreatesLegacyAccountAndDanteSession(t *testing.T) {
 
 	if resp.Token == "" {
 		t.Fatalf("expected non-empty token")
+	}
+	if resp.AccountID == "" {
+		t.Fatalf("expected local account id in register response")
 	}
 	if resp.AccountNumber != "2623860486223779" {
 		t.Fatalf("unexpected account number: %s", resp.AccountNumber)
@@ -305,7 +320,8 @@ func TestGetSessionReturnsValidatedView(t *testing.T) {
 			"dante_token": {
 				Token:               "dante_token",
 				CustomerID:          "CUST123",
-				AccountID:           "ACC123",
+				LocalAccountID:      "550e8400-e29b-41d4-a716-446655440000",
+				LegacyAccountID:     "ACC123",
 				CustomerName:        "Budi",
 				LegacySessionExpiry: now.Add(10 * time.Minute),
 				CreatedAt:           now.Add(-5 * time.Minute),
@@ -319,8 +335,11 @@ func TestGetSessionReturnsValidatedView(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession returned error: %v", err)
 	}
-	if session.AccountID != "ACC123" {
+	if session.AccountID != "550e8400-e29b-41d4-a716-446655440000" {
 		t.Fatalf("unexpected account id: %s", session.AccountID)
+	}
+	if session.LegacyAccountID != "ACC123" {
+		t.Fatalf("unexpected legacy account id: %s", session.LegacyAccountID)
 	}
 }
 

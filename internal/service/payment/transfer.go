@@ -140,7 +140,7 @@ func (s *TransferService) CreateTransaction(ctx context.Context, req TransferReq
 	if err := s.publisher.PublishTransfer(ctx, queue.TransferMessage{
 		TransactionID:     txRow.ID.String(),
 		AccountUUID:       account.ID.String(),
-		FromAccountID:     req.Session.AccountID,
+		FromAccountID:     req.Session.LegacyAccountID,
 		FromAccountNumber: req.Session.AccountNumber,
 		ToAccountNumber:   req.ToAccountNumber,
 		TransactionPIN:    req.TransactionPIN,

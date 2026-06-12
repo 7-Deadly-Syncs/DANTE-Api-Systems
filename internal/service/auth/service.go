@@ -52,23 +52,25 @@ type AccountProvisioner interface {
 
 // LoginResponse is the DANTE-issued session view returned to API handlers.
 type LoginResponse struct {
-	Token         string
-	CustomerID    string
-	AccountID     string
-	AccountNumber string
-	CustomerName  string
-	ExpiresAt     time.Time
+	Token           string
+	CustomerID      string
+	AccountID       string
+	LegacyAccountID string
+	AccountNumber   string
+	CustomerName    string
+	ExpiresAt       time.Time
 }
 
 // SessionView is the validated DANTE session view used by authenticated endpoints.
 type SessionView struct {
-	Token         string
-	CustomerID    string
-	AccountID     string
-	AccountNumber string
-	CustomerName  string
-	ExpiresAt     time.Time
-	CreatedAt     time.Time
+	Token           string
+	CustomerID      string
+	AccountID       string
+	LegacyAccountID string
+	AccountNumber   string
+	CustomerName    string
+	ExpiresAt       time.Time
+	CreatedAt       time.Time
 }
 
 // Service coordinates DANTE-issued sessions with legacy credential validation.
@@ -146,13 +148,14 @@ func (s *Service) GetSession(ctx context.Context, token string) (*SessionView, e
 	}
 
 	return &SessionView{
-		Token:         session.Token,
-		CustomerID:    session.CustomerID,
-		AccountID:     session.AccountID,
-		AccountNumber: session.AccountNumber,
-		CustomerName:  session.CustomerName,
-		ExpiresAt:     session.LegacySessionExpiry.UTC(),
-		CreatedAt:     session.CreatedAt.UTC(),
+		Token:           session.Token,
+		CustomerID:      session.CustomerID,
+		AccountID:       session.LocalAccountID,
+		LegacyAccountID: session.LegacyAccountID,
+		AccountNumber:   session.AccountNumber,
+		CustomerName:    session.CustomerName,
+		ExpiresAt:       session.LegacySessionExpiry.UTC(),
+		CreatedAt:       session.CreatedAt.UTC(),
 	}, nil
 }
 
@@ -187,7 +190,8 @@ func (s *Service) issueSessionFromLegacyLogin(ctx context.Context, username, pas
 	if err != nil {
 		return nil, fmt.Errorf("load legacy account profile after login: %w", err)
 	}
-	if err := s.ensureAccountProvisioned(ctx, result.CustomerID, profile.Name, profile.AccountNumber); err != nil {
+	localAccount, err := s.ensureAccountProvisioned(ctx, result.CustomerID, profile.Name, profile.AccountNumber)
+	if err != nil {
 		return nil, fmt.Errorf("provision local account mapping: %w", err)
 	}
 
@@ -199,7 +203,8 @@ func (s *Service) issueSessionFromLegacyLogin(ctx context.Context, username, pas
 	entry := cache.SessionEntry{
 		Token:               token,
 		CustomerID:          result.CustomerID,
-		AccountID:           result.AccountID,
+		LocalAccountID:      localAccount.ID.String(),
+		LegacyAccountID:     result.AccountID,
 		AccountNumber:       profile.AccountNumber,
 		CustomerName:        profile.Name,
 		LegacySessionID:     result.SessionReference,
@@ -211,24 +216,25 @@ func (s *Service) issueSessionFromLegacyLogin(ctx context.Context, username, pas
 	}
 
 	return &LoginResponse{
-		Token:         token,
-		CustomerID:    entry.CustomerID,
-		AccountID:     entry.AccountID,
-		AccountNumber: entry.AccountNumber,
-		CustomerName:  entry.CustomerName,
-		ExpiresAt:     expiresAt,
+		Token:           token,
+		CustomerID:      entry.CustomerID,
+		AccountID:       entry.LocalAccountID,
+		LegacyAccountID: entry.LegacyAccountID,
+		AccountNumber:   entry.AccountNumber,
+		CustomerName:    entry.CustomerName,
+		ExpiresAt:       expiresAt,
 	}, nil
 }
 
-func (s *Service) ensureAccountProvisioned(ctx context.Context, customerID, customerName, accountNumber string) error {
+func (s *Service) ensureAccountProvisioned(ctx context.Context, customerID, customerName, accountNumber string) (dbsqlc.Account, error) {
 	if s.provisioner == nil {
-		return nil
+		return dbsqlc.Account{}, nil
 	}
 
-	if _, err := s.provisioner.GetAccountByNumber(ctx, accountNumber); err == nil {
-		return nil
+	if account, err := s.provisioner.GetAccountByNumber(ctx, accountNumber); err == nil {
+		return account, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return dbsqlc.Account{}, err
 	}
 
 	lookupKey := sql.NullString{String: customerID, Valid: customerID != ""}
@@ -243,26 +249,26 @@ func (s *Service) ensureAccountProvisioned(ctx context.Context, customerID, cust
 		if err != nil {
 			user, err = s.provisioner.GetUserByPhoneNumber(ctx, lookupKey)
 			if err != nil {
-				return err
+				return dbsqlc.Account{}, err
 			}
 		}
 	default:
-		return err
+		return dbsqlc.Account{}, err
 	}
 
-	_, err = s.provisioner.CreateAccount(ctx, dbsqlc.CreateAccountParams{
+	account, err := s.provisioner.CreateAccount(ctx, dbsqlc.CreateAccountParams{
 		UserID:        user.ID,
 		AccountNumber: accountNumber,
 		Balance:       0,
 	})
 	if err == nil {
-		return nil
+		return account, nil
 	}
 
-	_, reloadErr := s.provisioner.GetAccountByNumber(ctx, accountNumber)
+	account, reloadErr := s.provisioner.GetAccountByNumber(ctx, accountNumber)
 	if reloadErr == nil {
-		return nil
+		return account, nil
 	}
 
-	return err
+	return dbsqlc.Account{}, err
 }

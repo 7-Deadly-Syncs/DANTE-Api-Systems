@@ -120,8 +120,8 @@ func TestGetBalanceReturnsCacheHit(t *testing.T) {
 	}, &fakeLegacy{})
 
 	balance, err := svc.GetBalance(context.Background(), accountID, authservice.SessionView{
-		AccountID:     "LEGACY-ACC-1",
-		AccountNumber: "2623860486223779",
+		LegacyAccountID: "LEGACY-ACC-1",
+		AccountNumber:   "2623860486223779",
 	}, "123456")
 	if err != nil {
 		t.Fatalf("GetBalance returned error: %v", err)
@@ -153,8 +153,8 @@ func TestGetBalanceFallsBackToLegacyAndUpdatesSnapshot(t *testing.T) {
 	svc.nowFunc = func() time.Time { return now }
 
 	balance, err := svc.GetBalance(context.Background(), accountID, authservice.SessionView{
-		AccountID:     "LEGACY-ACC-1",
-		AccountNumber: "2623860486223779",
+		LegacyAccountID: "LEGACY-ACC-1",
+		AccountNumber:   "2623860486223779",
 	}, "123456")
 	if err != nil {
 		t.Fatalf("GetBalance returned error: %v", err)
@@ -178,8 +178,8 @@ func TestGetBalanceRejectsForeignAccount(t *testing.T) {
 	}, &fakeBalanceCache{}, &fakeLegacy{})
 
 	_, err := svc.GetBalance(context.Background(), uuid.New(), authservice.SessionView{
-		AccountID:     "LEGACY-ACC-1",
-		AccountNumber: "222",
+		LegacyAccountID: "LEGACY-ACC-1",
+		AccountNumber:   "222",
 	}, "123456")
 	if !errors.Is(err, ErrAccountAccessDenied) {
 		t.Fatalf("expected ErrAccountAccessDenied, got %v", err)

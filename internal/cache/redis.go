@@ -46,7 +46,8 @@ type AccountBalanceCacheEntry struct {
 type SessionEntry struct {
 	Token               string    `json:"token"`
 	CustomerID          string    `json:"customer_id"`
-	AccountID           string    `json:"account_id"`
+	LocalAccountID      string    `json:"local_account_id"`
+	LegacyAccountID     string    `json:"legacy_account_id"`
 	AccountNumber       string    `json:"account_number"`
 	CustomerName        string    `json:"customer_name"`
 	LegacySessionID     string    `json:"legacy_session_id"`

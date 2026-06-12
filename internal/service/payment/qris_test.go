@@ -10,6 +10,7 @@ import (
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/cache"
 	dbsqlc "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database/sqlc"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/legacy"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/queue"
 	authservice "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/service/auth"
 	"github.com/google/uuid"
@@ -35,6 +36,23 @@ func (f *fakeRepo) GetAccountByNumber(ctx context.Context, accountNumber string)
 
 func (f *fakeRepo) GetMerchantByID(ctx context.Context, id uuid.UUID) (dbsqlc.Merchant, error) {
 	return f.merchant, f.merchantErr
+}
+
+func (f *fakeRepo) GetMerchantByQRISCode(ctx context.Context, qrisCode string) (dbsqlc.Merchant, error) {
+	return f.merchant, f.merchantErr
+}
+
+func (f *fakeRepo) CreateMerchant(ctx context.Context, arg dbsqlc.CreateMerchantParams) (dbsqlc.Merchant, error) {
+	if f.merchant.ID == uuid.Nil {
+		f.merchant = dbsqlc.Merchant{
+			ID:        uuid.New(),
+			Name:      arg.Name,
+			QrisCode:  arg.QrisCode,
+			Category:  arg.Category,
+			CreatedAt: time.Now().UTC(),
+		}
+	}
+	return f.merchant, nil
 }
 
 func (f *fakeRepo) GetTransactionByIdempotencyKey(ctx context.Context, idempotencyKey string) (dbsqlc.Transaction, error) {
@@ -92,6 +110,15 @@ type fakePublisher struct {
 	err             error
 }
 
+type fakeMerchantLookup struct {
+	record *legacy.MerchantRecord
+	err    error
+}
+
+func (f *fakeMerchantLookup) GetQrisMerchant(ctx context.Context, merchantCode string) (*legacy.MerchantRecord, error) {
+	return f.record, f.err
+}
+
 func (f *fakePublisher) PublishQRISPayment(ctx context.Context, msg queue.QRISPaymentMessage) error {
 	f.message = msg
 	return f.err
@@ -145,14 +172,14 @@ func TestCreateTransactionCreatesProcessingTransactionAndPublishes(t *testing.T)
 	}
 	publisher := &fakePublisher{}
 	statusCache := &fakeStatusCache{}
-	svc := NewQRISService(repo, statusCache, publisher)
+	svc := NewQRISService(repo, statusCache, publisher, nil)
 
 	result, err := svc.CreateTransaction(context.Background(), QRISRequest{
 		Session: authservice.SessionView{
 			AccountID:     "LEGACY-ACC-1",
 			AccountNumber: "2623860486223779",
 		},
-		MerchantID:     merchantID,
+		MerchantRef:    merchantID.String(),
 		Amount:         2500,
 		IdempotencyKey: "idem-1",
 	})
@@ -209,12 +236,13 @@ func TestCreateTransactionReturnsExistingOnIdempotentReplay(t *testing.T) {
 
 	svc := NewQRISService(&fakeRepo{
 		account:    dbsqlc.Account{ID: accountID, AccountNumber: "2623860486223779"},
+		merchant:   dbsqlc.Merchant{ID: merchantID, QrisCode: "MERCHANT001"},
 		existingTx: existing,
-	}, &fakeStatusCache{}, &fakePublisher{})
+	}, &fakeStatusCache{}, &fakePublisher{}, nil)
 
 	result, err := svc.CreateTransaction(context.Background(), QRISRequest{
 		Session:        authservice.SessionView{AccountNumber: "2623860486223779"},
-		MerchantID:     merchantID,
+		MerchantRef:    merchantID.String(),
 		Amount:         2500,
 		IdempotencyKey: "idem-1",
 	})
@@ -239,15 +267,69 @@ func TestCreateTransactionRejectsIdempotencyMismatch(t *testing.T) {
 			MerchantID: uuid.NullUUID{UUID: merchantID, Valid: true},
 			Amount:     2500,
 		},
-	}, &fakeStatusCache{}, &fakePublisher{})
+	}, &fakeStatusCache{}, &fakePublisher{}, nil)
 
 	_, err := svc.CreateTransaction(context.Background(), QRISRequest{
 		Session:        authservice.SessionView{AccountNumber: "2623860486223779"},
-		MerchantID:     merchantID,
+		MerchantRef:    merchantID.String(),
 		Amount:         9999,
 		IdempotencyKey: "idem-1",
 	})
 	if !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("expected ErrIdempotencyConflict, got %v", err)
+	}
+}
+
+func TestCreateTransactionResolvesMerchantByQrisCodeViaLegacy(t *testing.T) {
+	t.Parallel()
+
+	transactionID := uuid.New()
+	accountID := uuid.New()
+	userID := uuid.New()
+	now := time.Now().UTC()
+
+	repo := &fakeRepo{
+		account: dbsqlc.Account{
+			ID:            accountID,
+			UserID:        userID,
+			AccountNumber: "2623860486223779",
+		},
+		merchantErr:   sql.ErrNoRows,
+		existingTxErr: sql.ErrNoRows,
+		createdTx: dbsqlc.Transaction{
+			ID:             transactionID,
+			RequestedAt:    now,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			IdempotencyKey: "idem-legacy-code",
+			Status:         statusProcessing,
+		},
+	}
+	publisher := &fakePublisher{}
+	statusCache := &fakeStatusCache{}
+	svc := NewQRISService(repo, statusCache, publisher, &fakeMerchantLookup{
+		record: &legacy.MerchantRecord{
+			Code: "M003",
+			Name: "Warung Pak Budi",
+		},
+	})
+
+	result, err := svc.CreateTransaction(context.Background(), QRISRequest{
+		Session: authservice.SessionView{
+			AccountID:     "LEGACY-ACC-1",
+			AccountNumber: "2623860486223779",
+		},
+		MerchantRef:    "M003",
+		Amount:         45000,
+		IdempotencyKey: "idem-legacy-code",
+	})
+	if err != nil {
+		t.Fatalf("CreateTransaction returned error: %v", err)
+	}
+	if !result.Transaction.MerchantID.Valid {
+		t.Fatalf("expected merchant id to be materialized")
+	}
+	if publisher.message.MerchantCode != "M003" {
+		t.Fatalf("unexpected merchant code: %s", publisher.message.MerchantCode)
 	}
 }

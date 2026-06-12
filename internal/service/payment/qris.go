@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/cache"
 	dbsqlc "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database/sqlc"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/legacy"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/queue"
 	authservice "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/service/auth"
 	"github.com/google/uuid"
@@ -35,7 +37,7 @@ var ErrMerchantNotFound = errors.New("merchant not found")
 // QRISRequest is the validated service input for a QRIS payment creation request.
 type QRISRequest struct {
 	Session        authservice.SessionView
-	MerchantID     uuid.UUID
+	MerchantRef    string
 	Amount         int64
 	IdempotencyKey string
 }
@@ -50,10 +52,17 @@ type QRISResult struct {
 type Repository interface {
 	GetAccountByNumber(ctx context.Context, accountNumber string) (dbsqlc.Account, error)
 	GetMerchantByID(ctx context.Context, id uuid.UUID) (dbsqlc.Merchant, error)
+	GetMerchantByQRISCode(ctx context.Context, qrisCode string) (dbsqlc.Merchant, error)
+	CreateMerchant(ctx context.Context, arg dbsqlc.CreateMerchantParams) (dbsqlc.Merchant, error)
 	GetTransactionByIdempotencyKey(ctx context.Context, idempotencyKey string) (dbsqlc.Transaction, error)
 	CreateTransaction(ctx context.Context, arg dbsqlc.CreateTransactionParams) (dbsqlc.Transaction, error)
 	CreateTransactionEvent(ctx context.Context, arg dbsqlc.CreateTransactionEventParams) (dbsqlc.TransactionEvent, error)
 	UpdateTransactionStatus(ctx context.Context, arg dbsqlc.UpdateTransactionStatusParams) (dbsqlc.Transaction, error)
+}
+
+// MerchantLookup describes the legacy merchant lookup operation used to materialize missing merchants.
+type MerchantLookup interface {
+	GetQrisMerchant(ctx context.Context, merchantCode string) (*legacy.MerchantRecord, error)
 }
 
 // QRISPublisher describes the async queue publishing operation used by QRIS intake.
@@ -71,14 +80,16 @@ type QRISService struct {
 	repo      Repository
 	cache     StatusCache
 	publisher QRISPublisher
+	legacy    MerchantLookup
 }
 
 // NewQRISService constructs a QRIS payment intake service.
-func NewQRISService(repo Repository, cacheClient StatusCache, publisher QRISPublisher) *QRISService {
+func NewQRISService(repo Repository, cacheClient StatusCache, publisher QRISPublisher, legacyClient MerchantLookup) *QRISService {
 	return &QRISService{
 		repo:      repo,
 		cache:     cacheClient,
 		publisher: publisher,
+		legacy:    legacyClient,
 	}
 }
 
@@ -91,7 +102,12 @@ func (s *QRISService) CreateTransaction(ctx context.Context, req QRISRequest) (*
 			return nil, fmt.Errorf("load account for idempotency comparison: %w", accountErr)
 		}
 
-		if existing.AccountID != account.ID || !existing.MerchantID.Valid || existing.MerchantID.UUID != req.MerchantID || existing.Amount != req.Amount {
+		merchant, merchantErr := s.resolveMerchant(ctx, req.MerchantRef)
+		if merchantErr != nil {
+			return nil, merchantErr
+		}
+
+		if existing.AccountID != account.ID || !existing.MerchantID.Valid || existing.MerchantID.UUID != merchant.ID || existing.Amount != req.Amount {
 			return nil, ErrIdempotencyConflict
 		}
 
@@ -112,12 +128,9 @@ func (s *QRISService) CreateTransaction(ctx context.Context, req QRISRequest) (*
 		return nil, fmt.Errorf("load local account: %w", err)
 	}
 
-	merchant, err := s.repo.GetMerchantByID(ctx, req.MerchantID)
+	merchant, err := s.resolveMerchant(ctx, req.MerchantRef)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrMerchantNotFound
-		}
-		return nil, fmt.Errorf("load merchant: %w", err)
+		return nil, err
 	}
 
 	txRow, err := s.repo.CreateTransaction(ctx, dbsqlc.CreateTransactionParams{
@@ -208,4 +221,57 @@ func (s *QRISService) CreateTransaction(ctx context.Context, req QRISRequest) (*
 		Transaction: txRow,
 		Created:     true,
 	}, nil
+}
+
+func (s *QRISService) resolveMerchant(ctx context.Context, merchantRef string) (dbsqlc.Merchant, error) {
+	merchantRef = strings.TrimSpace(merchantRef)
+	if merchantRef == "" {
+		return dbsqlc.Merchant{}, ErrMerchantNotFound
+	}
+
+	if merchantID, err := uuid.Parse(merchantRef); err == nil {
+		merchant, getErr := s.repo.GetMerchantByID(ctx, merchantID)
+		if getErr != nil {
+			if errors.Is(getErr, sql.ErrNoRows) {
+				return dbsqlc.Merchant{}, ErrMerchantNotFound
+			}
+			return dbsqlc.Merchant{}, fmt.Errorf("load merchant by id: %w", getErr)
+		}
+		return merchant, nil
+	}
+
+	merchant, err := s.repo.GetMerchantByQRISCode(ctx, merchantRef)
+	if err == nil {
+		return merchant, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return dbsqlc.Merchant{}, fmt.Errorf("load merchant by qris code: %w", err)
+	}
+	if s.legacy == nil {
+		return dbsqlc.Merchant{}, ErrMerchantNotFound
+	}
+
+	record, err := s.legacy.GetQrisMerchant(ctx, merchantRef)
+	if err != nil {
+		if errors.Is(err, legacy.ErrNotFound) {
+			return dbsqlc.Merchant{}, ErrMerchantNotFound
+		}
+		return dbsqlc.Merchant{}, fmt.Errorf("load merchant from legacy: %w", err)
+	}
+
+	created, createErr := s.repo.CreateMerchant(ctx, dbsqlc.CreateMerchantParams{
+		Name:     record.Name,
+		QrisCode: record.Code,
+		Category: sql.NullString{},
+	})
+	if createErr == nil {
+		return created, nil
+	}
+
+	merchant, reloadErr := s.repo.GetMerchantByQRISCode(ctx, record.Code)
+	if reloadErr == nil {
+		return merchant, nil
+	}
+
+	return dbsqlc.Merchant{}, fmt.Errorf("create merchant from legacy: %w", createErr)
 }

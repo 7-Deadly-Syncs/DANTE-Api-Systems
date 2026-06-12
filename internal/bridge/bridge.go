@@ -119,7 +119,7 @@ type authSessionResponse struct {
 type qrisPaymentRequest struct {
 	paymentHeaders
 	Body struct {
-		MerchantID string `json:"merchant_id" format:"uuid" doc:"Target merchant UUID for the QRIS payment"`
+		MerchantID string `json:"merchant_id" minLength:"1" doc:"Target merchant reference for the QRIS payment, either a DANTE merchant UUID or a QRIS/legacy merchant code"`
 		Amount     int64  `json:"amount" minimum:"1" doc:"Payment amount in the smallest currency unit"`
 	}
 }
@@ -377,7 +377,7 @@ func Start() {
 	authSvc := authservice.NewService(cacheClient, legacyClient, store.Queries)
 	accountSvc := accountservice.NewService(store.Queries, cacheClient, legacyClient)
 	merchantSvc := merchantservice.NewService(cacheClient, store.Queries, legacyMerchantClient, cacheStats)
-	qrisPaymentSvc := paymentservice.NewQRISService(store.Queries, cacheClient, qrisPublisher)
+	qrisPaymentSvc := paymentservice.NewQRISService(store.Queries, cacheClient, qrisPublisher, legacyClient)
 	qrisWorker := paymentservice.NewQRISWorker(store.Queries, cacheClient, cacheClient, legacyClient)
 	transferSvc := paymentservice.NewTransferService(store.Queries, cacheClient, qrisPublisher)
 	transferWorker := paymentservice.NewTransferWorker(store.Queries, cacheClient, cacheClient, legacyClient)
@@ -699,14 +699,13 @@ func Start() {
 			}
 		}
 
-		merchantID, err := uuid.Parse(input.Body.MerchantID)
-		if err != nil {
-			return nil, huma.Error400BadRequest("invalid merchant id", err)
+		if input.Body.MerchantID == "" {
+			return nil, huma.Error400BadRequest("merchant_id is required")
 		}
 
 		result, err := qrisPaymentSvc.CreateTransaction(ctx, paymentservice.QRISRequest{
 			Session:        *session,
-			MerchantID:     merchantID,
+			MerchantRef:    input.Body.MerchantID,
 			Amount:         input.Body.Amount,
 			IdempotencyKey: input.IdempotencyKey,
 		})

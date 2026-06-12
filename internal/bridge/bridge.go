@@ -98,6 +98,24 @@ type accountBalanceHeaders struct {
 	TransactionPIN string `header:"X-Transaction-PIN" doc:"Transaction PIN used to authorize a legacy balance refresh when cache is cold"`
 }
 
+type accountProfileRequest struct {
+	AccountID     string `path:"accountId" doc:"Legacy account identifier such as ACC000080"`
+	Authorization string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
+}
+
+type accountBalanceRequest struct {
+	AccountID      string `path:"accountId" doc:"Legacy account identifier such as ACC000080"`
+	Authorization  string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
+	TransactionPIN string `header:"X-Transaction-PIN" doc:"Transaction PIN used to authorize a legacy balance refresh when cache is cold"`
+}
+
+type accountTransactionsRequest struct {
+	AccountID     string `path:"accountId" doc:"Legacy account identifier such as ACC000080"`
+	Cursor        string `query:"cursor" doc:"Opaque pagination cursor returned by the previous page"`
+	Limit         int    `query:"limit" doc:"Page size, default 20, max 100" default:"20" minimum:"1" maximum:"100"`
+	Authorization string `header:"Authorization" doc:"Bearer token returned by DANTE login"`
+}
+
 type authLoginResponse struct {
 	Body authSessionDTO
 }
@@ -810,10 +828,7 @@ func Start() {
 		Summary:     "Get account profile",
 		Description: "Returns the authenticated account profile for the requested legacy account ID using the DANTE session plus the local account mapping.",
 		Tags:        []string{"Accounts", "Auth"},
-	}, func(ctx context.Context, input *struct {
-		accountPathParams
-		authSessionHeaders
-	}) (*accountProfileResponse, error) {
+	}, func(ctx context.Context, input *accountProfileRequest) (*accountProfileResponse, error) {
 		token, err := parseBearerToken(input.Authorization)
 		if err != nil {
 			return nil, huma.Error401Unauthorized("missing or invalid bearer token")
@@ -872,10 +887,7 @@ func Start() {
 		Summary:     "Get account balance",
 		Description: "Returns a cached balance snapshot when available, otherwise refreshes the balance from legacy using the authenticated session plus the transaction PIN header.",
 		Tags:        []string{"Accounts", "Auth"},
-	}, func(ctx context.Context, input *struct {
-		accountPathParams
-		accountBalanceHeaders
-	}) (*accountBalanceResponse, error) {
+	}, func(ctx context.Context, input *accountBalanceRequest) (*accountBalanceResponse, error) {
 		token, err := parseBearerToken(input.Authorization)
 		if err != nil {
 			return nil, huma.Error401Unauthorized("missing or invalid bearer token")
@@ -1020,11 +1032,7 @@ func Start() {
 		Summary:     "List account transactions",
 		Description: "Returns cursor-paginated transaction history for the authenticated legacy account ordered from newest to oldest.",
 		Tags:        []string{"Accounts", "Transactions"},
-	}, func(ctx context.Context, input *struct {
-		accountPathParams
-		accountTransactionsQueryParams
-		authSessionHeaders
-	}) (*accountTransactionsResponse, error) {
+	}, func(ctx context.Context, input *accountTransactionsRequest) (*accountTransactionsResponse, error) {
 		token, err := parseBearerToken(input.Authorization)
 		if err != nil {
 			return nil, huma.Error401Unauthorized("missing or invalid bearer token")

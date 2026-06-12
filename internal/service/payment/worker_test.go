@@ -50,11 +50,17 @@ func (f *fakeWorkerRepo) CreateLegacyCallLog(ctx context.Context, arg dbsqlc.Cre
 }
 
 type fakeQRISExecutor struct {
-	result *legacy.QRISPaymentResult
-	err    error
+	result           *legacy.QRISPaymentResult
+	err              error
+	gotAccountNumber string
+	gotMerchantCode  string
+	gotAmount        int64
 }
 
 func (f *fakeQRISExecutor) PayQRIS(ctx context.Context, accountID, merchantCode string, amount int64) (*legacy.QRISPaymentResult, error) {
+	f.gotAccountNumber = accountID
+	f.gotMerchantCode = merchantCode
+	f.gotAmount = amount
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -116,7 +122,8 @@ func TestQRISWorkerMarksTransactionSuccess(t *testing.T) {
 	err := worker.HandleQRISPayment(context.Background(), queue.QRISPaymentMessage{
 		TransactionID: transactionID.String(),
 		AccountUUID:   accountUUID.String(),
-		AccountID:     "LEGACY-ACC-1",
+		AccountID:     "LEGACY-ID-1",
+		AccountNumber: "100000001",
 		MerchantCode:  "MERCHANT001",
 		Amount:        2500,
 	})
@@ -126,6 +133,15 @@ func TestQRISWorkerMarksTransactionSuccess(t *testing.T) {
 
 	if len(repo.updatedArgs) != 1 {
 		t.Fatalf("expected one transaction update, got %d", len(repo.updatedArgs))
+	}
+	if executor.gotAccountNumber != "100000001" {
+		t.Fatalf("expected qris executor to use account number, got %q", executor.gotAccountNumber)
+	}
+	if executor.gotMerchantCode != "MERCHANT001" {
+		t.Fatalf("expected merchant code to be preserved, got %q", executor.gotMerchantCode)
+	}
+	if executor.gotAmount != 2500 {
+		t.Fatalf("expected amount 2500, got %d", executor.gotAmount)
 	}
 	if repo.updatedArgs[0].Status != statusSuccess {
 		t.Fatalf("expected status %s, got %s", statusSuccess, repo.updatedArgs[0].Status)
@@ -170,7 +186,8 @@ func TestQRISWorkerMarksTransactionFailedOnLegacyError(t *testing.T) {
 	worker := NewQRISWorker(repo, statusCache, &fakeBalanceCache{}, executor)
 	err := worker.HandleQRISPayment(context.Background(), queue.QRISPaymentMessage{
 		TransactionID: transactionID.String(),
-		AccountID:     "LEGACY-ACC-1",
+		AccountID:     "LEGACY-ID-1",
+		AccountNumber: "100000001",
 		MerchantCode:  "MERCHANT001",
 		Amount:        2500,
 	})
@@ -180,6 +197,9 @@ func TestQRISWorkerMarksTransactionFailedOnLegacyError(t *testing.T) {
 
 	if len(repo.updatedArgs) != 1 {
 		t.Fatalf("expected one transaction update, got %d", len(repo.updatedArgs))
+	}
+	if executor.gotAccountNumber != "100000001" {
+		t.Fatalf("expected qris executor to use account number, got %q", executor.gotAccountNumber)
 	}
 	if repo.updatedArgs[0].Status != statusFailed {
 		t.Fatalf("expected status %s, got %s", statusFailed, repo.updatedArgs[0].Status)
@@ -224,7 +244,8 @@ func TestQRISWorkerReturnsErrorWhenPersistenceFails(t *testing.T) {
 
 	err := worker.HandleQRISPayment(context.Background(), queue.QRISPaymentMessage{
 		TransactionID: transactionID.String(),
-		AccountID:     "LEGACY-ACC-1",
+		AccountID:     "LEGACY-ID-1",
+		AccountNumber: "100000001",
 		MerchantCode:  "MERCHANT001",
 		Amount:        2500,
 	})

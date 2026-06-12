@@ -24,7 +24,7 @@ const (
 
 // QRISExecutor executes QRIS payments against the legacy adapter.
 type QRISExecutor interface {
-	PayQRIS(ctx context.Context, accountID, merchantCode string, amount int64) (*legacy.QRISPaymentResult, error)
+	PayQRIS(ctx context.Context, accountNumber, merchantCode string, amount int64) (*legacy.QRISPaymentResult, error)
 }
 
 // QRISWorker finalizes queued QRIS transactions by calling legacy and persisting the final result.
@@ -71,7 +71,7 @@ func (w *QRISWorker) HandleQRISPayment(ctx context.Context, msg queue.QRISPaymen
 		return fmt.Errorf("create worker start event: %w", err)
 	}
 
-	result, err := w.executor.PayQRIS(ctx, msg.AccountID, msg.MerchantCode, msg.Amount)
+	result, err := w.executor.PayQRIS(ctx, msg.AccountNumber, msg.MerchantCode, msg.Amount)
 	if err != nil {
 		w.logLegacyCall(ctx, transactionID, false, time.Since(startedAt), err)
 		return w.markFailed(ctx, msg, err)

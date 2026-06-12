@@ -51,7 +51,7 @@ func (w *TransferWorker) HandleTransfer(ctx context.Context, msg queue.TransferM
 		return fmt.Errorf("create transfer worker start event: %w", err)
 	}
 
-	result, err := w.executor.Transfer(ctx, msg.FromAccountID, msg.TransactionPIN, msg.ToAccountNumber, msg.Amount)
+	result, err := w.executor.Transfer(ctx, msg.FromAccountNumber, msg.TransactionPIN, msg.ToAccountNumber, msg.Amount)
 	if err != nil {
 		logLegacyCall(ctx, w.repo, transactionID, "transfer", false, time.Since(startedAt), err)
 		return w.markFailed(ctx, msg, err)

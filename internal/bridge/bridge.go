@@ -374,7 +374,7 @@ func Start() {
 		},
 	)
 	qrisPublisher := queue.NewPublisher(cfg.RabbitMQ)
-	authSvc := authservice.NewService(cacheClient, legacyClient)
+	authSvc := authservice.NewService(cacheClient, legacyClient, store.Queries)
 	accountSvc := accountservice.NewService(store.Queries, cacheClient, legacyClient)
 	merchantSvc := merchantservice.NewService(cacheClient, store.Queries, legacyMerchantClient, cacheStats)
 	qrisPaymentSvc := paymentservice.NewQRISService(store.Queries, cacheClient, qrisPublisher)

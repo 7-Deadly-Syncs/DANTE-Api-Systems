@@ -2,12 +2,15 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/cache"
+	dbsqlc "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database/sqlc"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/legacy"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -66,11 +69,75 @@ func (f *fakeSessionStore) DeleteSession(ctx context.Context, token string) erro
 	return nil
 }
 
+type fakeProvisioner struct {
+	user             dbsqlc.User
+	account          dbsqlc.Account
+	getUserErr       error
+	getAccountErr    error
+	createUserErr    error
+	createAccountErr error
+	createUserCalls  int
+	createAccCalls   int
+}
+
+func (f *fakeProvisioner) GetUserByPhoneNumber(ctx context.Context, phoneNumber sql.NullString) (dbsqlc.User, error) {
+	if f.getUserErr != nil {
+		return dbsqlc.User{}, f.getUserErr
+	}
+	return f.user, nil
+}
+
+func (f *fakeProvisioner) CreateUser(ctx context.Context, arg dbsqlc.CreateUserParams) (dbsqlc.User, error) {
+	f.createUserCalls++
+	if f.createUserErr != nil {
+		return dbsqlc.User{}, f.createUserErr
+	}
+	if f.user.ID == uuid.Nil {
+		f.user = dbsqlc.User{
+			ID:          uuid.New(),
+			Name:        arg.Name,
+			PhoneNumber: arg.PhoneNumber,
+			CreatedAt:   time.Now().UTC(),
+		}
+	}
+	f.getUserErr = nil
+	return f.user, nil
+}
+
+func (f *fakeProvisioner) GetAccountByNumber(ctx context.Context, accountNumber string) (dbsqlc.Account, error) {
+	if f.getAccountErr != nil {
+		return dbsqlc.Account{}, f.getAccountErr
+	}
+	return f.account, nil
+}
+
+func (f *fakeProvisioner) CreateAccount(ctx context.Context, arg dbsqlc.CreateAccountParams) (dbsqlc.Account, error) {
+	f.createAccCalls++
+	if f.createAccountErr != nil {
+		return dbsqlc.Account{}, f.createAccountErr
+	}
+	if f.account.ID == uuid.Nil {
+		f.account = dbsqlc.Account{
+			ID:            uuid.New(),
+			UserID:        arg.UserID,
+			AccountNumber: arg.AccountNumber,
+			Balance:       arg.Balance,
+			CreatedAt:     time.Now().UTC(),
+		}
+	}
+	f.getAccountErr = nil
+	return f.account, nil
+}
+
 func TestLoginCreatesDanteSession(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 12, 10, 0, 0, 0, time.UTC)
 	store := &fakeSessionStore{}
+	provisioner := &fakeProvisioner{
+		getUserErr:    sql.ErrNoRows,
+		getAccountErr: sql.ErrNoRows,
+	}
 	svc := NewService(store, &fakeLegacy{
 		loginResult: &legacy.LoginResult{
 			CustomerID:       "CUST123",
@@ -85,7 +152,7 @@ func TestLoginCreatesDanteSession(t *testing.T) {
 			AccountNumber: "2623860486223779",
 			Name:          "Budi Santoso",
 		},
-	})
+	}, provisioner)
 	svc.now = func() time.Time { return now }
 
 	resp, err := svc.Login(context.Background(), "budi@example.com", "secret")
@@ -110,6 +177,12 @@ func TestLoginCreatesDanteSession(t *testing.T) {
 	if session.AccountNumber != "2623860486223779" {
 		t.Fatalf("unexpected account number: %s", session.AccountNumber)
 	}
+	if provisioner.createUserCalls != 1 {
+		t.Fatalf("expected one local user creation, got %d", provisioner.createUserCalls)
+	}
+	if provisioner.createAccCalls != 1 {
+		t.Fatalf("expected one local account creation, got %d", provisioner.createAccCalls)
+	}
 }
 
 func TestLoginMapsInvalidCredentials(t *testing.T) {
@@ -120,7 +193,7 @@ func TestLoginMapsInvalidCredentials(t *testing.T) {
 			Operation: "login",
 			Response:  "ERR|INVALID_CREDENTIALS",
 		},
-	})
+	}, nil)
 
 	_, err := svc.Login(context.Background(), "bad@example.com", "bad")
 	if !errors.Is(err, ErrInvalidCredentials) {
@@ -151,6 +224,9 @@ func TestRegisterCreatesLegacyAccountAndDanteSession(t *testing.T) {
 			AccountNumber: "2623860486223779",
 			Name:          "Budi Santoso",
 		},
+	}, &fakeProvisioner{
+		getUserErr:    sql.ErrNoRows,
+		getAccountErr: sql.ErrNoRows,
 	})
 	svc.now = func() time.Time { return now }
 
@@ -175,7 +251,7 @@ func TestRegisterMapsDuplicateEmail(t *testing.T) {
 			Operation: "register",
 			Response:  "ERR|EMAIL_EXISTS",
 		},
-	})
+	}, nil)
 
 	_, err := svc.Register(context.Background(), "Budi", "budi@example.com", "secret", "123456")
 	if !errors.Is(err, ErrEmailAlreadyRegistered) {
@@ -195,7 +271,7 @@ func TestLogoutDeletesSessionAndCallsLegacy(t *testing.T) {
 		},
 	}
 	legacyClient := &fakeLegacy{}
-	svc := NewService(store, legacyClient)
+	svc := NewService(store, legacyClient, nil)
 
 	if err := svc.Logout(context.Background(), "dante_token"); err != nil {
 		t.Fatalf("Logout returned error: %v", err)
@@ -212,7 +288,7 @@ func TestLogoutDeletesSessionAndCallsLegacy(t *testing.T) {
 func TestLogoutMapsMissingSessionToInvalidToken(t *testing.T) {
 	t.Parallel()
 
-	svc := NewService(&fakeSessionStore{}, &fakeLegacy{})
+	svc := NewService(&fakeSessionStore{}, &fakeLegacy{}, nil)
 
 	err := svc.Logout(context.Background(), "missing")
 	if !errors.Is(err, ErrInvalidToken) {
@@ -236,7 +312,7 @@ func TestGetSessionReturnsValidatedView(t *testing.T) {
 			},
 		},
 	}
-	svc := NewService(store, &fakeLegacy{})
+	svc := NewService(store, &fakeLegacy{}, nil)
 	svc.now = func() time.Time { return now }
 
 	session, err := svc.GetSession(context.Background(), "dante_token")
@@ -260,7 +336,7 @@ func TestGetSessionExpiresAndDeletesStaleSession(t *testing.T) {
 			},
 		},
 	}
-	svc := NewService(store, &fakeLegacy{})
+	svc := NewService(store, &fakeLegacy{}, nil)
 	svc.now = func() time.Time { return now }
 
 	_, err := svc.GetSession(context.Background(), "dante_token")

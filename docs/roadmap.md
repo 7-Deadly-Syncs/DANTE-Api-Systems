@@ -39,7 +39,7 @@ Status legend:
 - [x] `username + password` is for login, while `transaction PIN` is only for financial transaction authorization
 - [x] Worker is the only component allowed to execute payment calls to legacy
 - [x] Legacy adapter must isolate all legacy API details from service logic
-- [ ] Keep `db/schema/init.sql` and `db/migrations/00001_init.sql` aligned until migrations are split further
+- [x] Keep `db/schema/init.sql` and `db/migrations/00001_init.sql` aligned until migrations are split further
 
 ---
 

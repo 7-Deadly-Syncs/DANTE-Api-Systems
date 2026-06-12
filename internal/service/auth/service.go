@@ -3,12 +3,14 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/cache"
+	dbsqlc "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/database/sqlc"
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/legacy"
 	"github.com/redis/go-redis/v9"
 )
@@ -40,6 +42,14 @@ type SessionStore interface {
 	DeleteSession(ctx context.Context, token string) error
 }
 
+// AccountProvisioner describes the local account mapping operations needed after legacy auth.
+type AccountProvisioner interface {
+	GetUserByPhoneNumber(ctx context.Context, phoneNumber sql.NullString) (dbsqlc.User, error)
+	CreateUser(ctx context.Context, arg dbsqlc.CreateUserParams) (dbsqlc.User, error)
+	GetAccountByNumber(ctx context.Context, accountNumber string) (dbsqlc.Account, error)
+	CreateAccount(ctx context.Context, arg dbsqlc.CreateAccountParams) (dbsqlc.Account, error)
+}
+
 // LoginResponse is the DANTE-issued session view returned to API handlers.
 type LoginResponse struct {
 	Token         string
@@ -63,17 +73,19 @@ type SessionView struct {
 
 // Service coordinates DANTE-issued sessions with legacy credential validation.
 type Service struct {
-	store  SessionStore
-	legacy Authenticator
-	now    func() time.Time
+	store       SessionStore
+	legacy      Authenticator
+	provisioner AccountProvisioner
+	now         func() time.Time
 }
 
 // NewService constructs an auth service.
-func NewService(store SessionStore, legacyClient Authenticator) *Service {
+func NewService(store SessionStore, legacyClient Authenticator, provisioner AccountProvisioner) *Service {
 	return &Service{
-		store:  store,
-		legacy: legacyClient,
-		now:    time.Now,
+		store:       store,
+		legacy:      legacyClient,
+		provisioner: provisioner,
+		now:         time.Now,
 	}
 }
 
@@ -175,6 +187,9 @@ func (s *Service) issueSessionFromLegacyLogin(ctx context.Context, username, pas
 	if err != nil {
 		return nil, fmt.Errorf("load legacy account profile after login: %w", err)
 	}
+	if err := s.ensureAccountProvisioned(ctx, result.CustomerID, profile.Name, profile.AccountNumber); err != nil {
+		return nil, fmt.Errorf("provision local account mapping: %w", err)
+	}
 
 	token, err := newSessionToken()
 	if err != nil {
@@ -203,4 +218,51 @@ func (s *Service) issueSessionFromLegacyLogin(ctx context.Context, username, pas
 		CustomerName:  entry.CustomerName,
 		ExpiresAt:     expiresAt,
 	}, nil
+}
+
+func (s *Service) ensureAccountProvisioned(ctx context.Context, customerID, customerName, accountNumber string) error {
+	if s.provisioner == nil {
+		return nil
+	}
+
+	if _, err := s.provisioner.GetAccountByNumber(ctx, accountNumber); err == nil {
+		return nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	lookupKey := sql.NullString{String: customerID, Valid: customerID != ""}
+	user, err := s.provisioner.GetUserByPhoneNumber(ctx, lookupKey)
+	switch {
+	case err == nil:
+	case errors.Is(err, sql.ErrNoRows):
+		user, err = s.provisioner.CreateUser(ctx, dbsqlc.CreateUserParams{
+			Name:        customerName,
+			PhoneNumber: lookupKey,
+		})
+		if err != nil {
+			user, err = s.provisioner.GetUserByPhoneNumber(ctx, lookupKey)
+			if err != nil {
+				return err
+			}
+		}
+	default:
+		return err
+	}
+
+	_, err = s.provisioner.CreateAccount(ctx, dbsqlc.CreateAccountParams{
+		UserID:        user.ID,
+		AccountNumber: accountNumber,
+		Balance:       0,
+	})
+	if err == nil {
+		return nil
+	}
+
+	_, reloadErr := s.provisioner.GetAccountByNumber(ctx, accountNumber)
+	if reloadErr == nil {
+		return nil
+	}
+
+	return err
 }

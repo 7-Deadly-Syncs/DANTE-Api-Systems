@@ -38,11 +38,15 @@ func (f *fakeRepo) UpdateAccountBalance(ctx context.Context, arg dbsqlc.UpdateAc
 }
 
 type fakeLegacy struct {
-	snapshot *legacy.BalanceSnapshot
-	err      error
+	snapshot  *legacy.BalanceSnapshot
+	err       error
+	accountID string
+	pin       string
 }
 
 func (f *fakeLegacy) GetBalance(ctx context.Context, accountID, pin string) (*legacy.BalanceSnapshot, error) {
+	f.accountID = accountID
+	f.pin = pin
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -161,6 +165,12 @@ func TestGetBalanceFallsBackToLegacyAndUpdatesSnapshot(t *testing.T) {
 	}
 	if balance.Source != "legacy" || balance.Balance != 75000 {
 		t.Fatalf("unexpected legacy balance: %+v", balance)
+	}
+	if svc.legacy.(*fakeLegacy).accountID != "2623860486223779" {
+		t.Fatalf("expected legacy balance lookup by account number, got %s", svc.legacy.(*fakeLegacy).accountID)
+	}
+	if svc.legacy.(*fakeLegacy).pin != "123456" {
+		t.Fatalf("expected forwarded transaction pin, got %s", svc.legacy.(*fakeLegacy).pin)
 	}
 	if cacheClient.setData.Balance != 75000 {
 		t.Fatalf("expected cached legacy balance, got %+v", cacheClient.setData)

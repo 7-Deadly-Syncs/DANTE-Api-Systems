@@ -113,7 +113,7 @@ func (s *Service) GetBalance(ctx context.Context, localAccountID uuid.UUID, sess
 		return nil, fmt.Errorf("read account balance from cache: %w", err)
 	}
 
-	snapshot, err := s.legacy.GetBalance(ctx, session.LegacyAccountID, transactionPIN)
+	snapshot, err := s.legacy.GetBalance(ctx, session.AccountNumber, transactionPIN)
 	if err != nil {
 		return nil, fmt.Errorf("load account balance from legacy: %w", err)
 	}

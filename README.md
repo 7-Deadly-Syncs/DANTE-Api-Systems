@@ -134,3 +134,4 @@ Do not edit generated files under `internal/database/sqlc` manually.
 - [docs/cache_strategies.md](/docs/cache_strategies.md): Redis key, TTL, and fallback policy
 - [docs/auth_flow.md](/docs/auth_flow.md): recommended login and transaction-authorization boundary between client, DANTE, and legacy
 - [docs/project_context.md](/docs/project_context.md): project brief and scope framing
+- [docs/distributed_tracing.md](/docs/distributed_tracing.md): OpenTelemetry, Jaeger, RabbitMQ propagation, and curl/Postman tracing guide

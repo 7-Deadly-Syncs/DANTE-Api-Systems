@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/config"
+	"github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const workerReconnectDelay = 3 * time.Second
@@ -169,9 +172,18 @@ func (c *Consumer) runSession(ctx context.Context, names queueNames, handle func
 				}
 			}
 
-			jobCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			deliveryCtx := otel.GetTextMapPropagator().Extract(ctx, newAMQPHeaderCarrier(delivery.Headers))
+			deliveryCtx, deliverySpan := tracing.StartConsumerSpan(deliveryCtx, "rabbitmq", "rabbitmq.consume "+names.Primary,
+				attribute.String("messaging.system", "rabbitmq"),
+				attribute.String("messaging.operation", "process"),
+				attribute.String("messaging.destination.name", names.Primary),
+				attribute.Int("messaging.message.retry_count", retryCountFromHeaders(delivery.Headers)),
+			)
+
+			jobCtx, cancel := context.WithTimeout(deliveryCtx, 15*time.Second)
 			err := handle(jobCtx, delivery.Body)
 			cancel()
+			tracing.EndSpan(deliverySpan, err)
 			if err != nil {
 				if _, ok := err.(*json.SyntaxError); ok {
 					if c.observer != nil {
@@ -197,7 +209,7 @@ func (c *Consumer) runSession(ctx context.Context, names queueNames, handle func
 					continue
 				}
 
-				if err := c.publishRetry(ctx, ch, names, delivery, attempt); err != nil {
+				if err := c.publishRetry(deliveryCtx, ch, names, delivery, attempt); err != nil {
 					_ = delivery.Nack(false, true)
 					continue
 				}
@@ -216,21 +228,38 @@ func (c *Consumer) runSession(ctx context.Context, names queueNames, handle func
 }
 
 func (c *Consumer) publishRetry(ctx context.Context, ch *amqp.Channel, names queueNames, delivery amqp.Delivery, attempt int) error {
+	ctx, span := tracing.StartProducerSpan(ctx, "rabbitmq", "rabbitmq.publish retry",
+		attribute.String("messaging.system", "rabbitmq"),
+		attribute.String("messaging.operation", "publish"),
+		attribute.String("messaging.destination.name", names.Retry),
+		attribute.Int("messaging.message.retry_count", attempt),
+	)
+	var spanErr error
+	defer func() {
+		tracing.EndSpan(span, spanErr)
+	}()
+
 	headers := cloneHeaders(delivery.Headers)
 	headers[headerRetryCount] = int32(attempt)
 	if _, ok := headers[headerFirstEnqueuedAt]; !ok {
 		headers[headerFirstEnqueuedAt] = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	otel.GetTextMapPropagator().Inject(ctx, newAMQPHeaderCarrier(headers))
 
 	retryDelay := retryDelayForAttempt(c.cfg, attempt)
-	return ch.PublishWithContext(ctx, "", names.Retry, false, false, amqp.Publishing{
+	if err := ch.PublishWithContext(ctx, "", names.Retry, false, false, amqp.Publishing{
 		ContentType:     delivery.ContentType,
 		ContentEncoding: delivery.ContentEncoding,
 		Headers:         headers,
 		Body:            delivery.Body,
 		Timestamp:       time.Now().UTC(),
 		Expiration:      strconv.FormatInt(retryDelay.Milliseconds(), 10),
-	})
+	}); err != nil {
+		spanErr = err
+		return err
+	}
+
+	return nil
 }
 
 func retryCountFromHeaders(headers amqp.Table) int {

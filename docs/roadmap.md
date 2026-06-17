@@ -223,6 +223,7 @@ Focus: database evolution, observability, cross-cutting repository work, and tea
 - [x] Track legacy call success/failure rate
 - [x] Track RabbitMQ queue depth / worker lag
 - [x] Track transaction state counts
+- [x] Add OpenTelemetry distributed tracing to HTTP, PostgreSQL, Redis, RabbitMQ, and legacy calls
 - [x] Add Prometheus scrape config
 - [x] Add Grafana dashboard
 

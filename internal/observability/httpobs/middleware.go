@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	apptracing "github.com/7-Deadly-Syncs/DANTE-Api-Systems/internal/observability/tracing"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"go.opentelemetry.io/otel"
@@ -98,6 +99,10 @@ func Tracing(serviceName string) func(http.Handler) http.Handler {
 
 			r = r.WithContext(ctx)
 			wrapped := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			handlerCtx, handlerSpan := apptracing.StartInternalSpan(ctx, "http.handler", "http.handler",
+				attribute.String("http.method", r.Method),
+			)
+			r = r.WithContext(handlerCtx)
 
 			defer func() {
 				statusCode := wrapped.Status()
@@ -108,6 +113,7 @@ func Tracing(serviceName string) func(http.Handler) http.Handler {
 					}
 
 					finishSpan(span, r, statusCode)
+					finishHandlerSpan(handlerSpan, r, statusCode, fmt.Errorf("panic: %v", recovered))
 					span.RecordError(fmt.Errorf("panic: %v", recovered))
 					span.SetStatus(codes.Error, "panic")
 
@@ -119,11 +125,31 @@ func Tracing(serviceName string) func(http.Handler) http.Handler {
 				}
 
 				finishSpan(span, r, statusCode)
+				finishHandlerSpan(handlerSpan, r, statusCode, nil)
 			}()
 
 			next.ServeHTTP(wrapped, r)
 		})
 	}
+}
+
+func finishHandlerSpan(span trace.Span, r *http.Request, statusCode int, err error) {
+	path := routePattern(r)
+
+	span.SetName("handler " + r.Method + " " + path)
+	span.SetAttributes(
+		attribute.String("http.route", path),
+		attribute.Int("http.status_code", statusCode),
+	)
+
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	} else if statusCode >= 500 {
+		span.SetStatus(codes.Error, http.StatusText(statusCode))
+	}
+
+	span.End()
 }
 
 func finishSpan(span trace.Span, r *http.Request, statusCode int) {

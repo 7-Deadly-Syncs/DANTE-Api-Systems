@@ -139,9 +139,9 @@ func Load() Config {
 			Timeout:        getenvDuration("LEGACY_TIMEOUT", 5*time.Second),
 		},
 		Observability: ObservabilityConfig{
-			ServiceName:      getenv("OTEL_SERVICE_NAME", "dante-api-systems"),
+			ServiceName:      getenv("OTEL_SERVICE_NAME", "dante-api"),
 			TracingEnabled:   getenvBool("TRACING_ENABLED", true),
-			JaegerEndpoint:   getenv("JAEGER_OTLP_ENDPOINT", "jaeger:4318"),
+			JaegerEndpoint:   getenv("OTEL_EXPORTER_OTLP_ENDPOINT", getenv("JAEGER_OTLP_ENDPOINT", "http://jaeger:4318")),
 			TraceSampleRatio: getenvFloat("TRACE_SAMPLE_RATIO", 1.0),
 		},
 	}

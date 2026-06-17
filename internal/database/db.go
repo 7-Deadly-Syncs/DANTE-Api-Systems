@@ -55,6 +55,6 @@ func Open(ctx context.Context, cfg config.DatabaseConfig) (*sql.DB, error) {
 func NewStore(db *sql.DB) *Store {
 	return &Store{
 		DB:      db,
-		Queries: sqlc.New(db),
+		Queries: sqlc.New(newTracedDBTX(db)),
 	}
 }
